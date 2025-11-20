@@ -1,0 +1,44 @@
+#include <stdio.h>
+#include <unistd.h>
+#include <string.h>
+
+// Function p: Reads input and copies 20 bytes to destination
+void p(char *dest, char *prompt) {
+    char big_buffer[4104];      // Large buffer on stack
+    char *newline_ptr;
+
+    puts(prompt);                           // Print " - "
+    read(0, big_buffer, 4096);              // Read up to 4096 bytes
+    newline_ptr = strchr(big_buffer, '\n'); // Find newline
+    *newline_ptr = '\0';                    // Replace newline with null
+    strncpy(dest, big_buffer, 20);          // Copy EXACTLY 20 bytes
+    // VULNERABILITY: No null terminator if input >= 20 bytes!
+}
+
+// Function pp: Gets two inputs and concatenates them
+void pp(char *buff) {
+    char str1[20];      // First string buffer
+    char str2[20];      // Second string buffer
+
+    p(str1, " - ");     // Get first input → str1
+    p(str2, " - ");     // Get second input → str2
+
+    // VULNERABLE: If str1 has no null terminator, strcpy keeps copying!
+    strcpy(buff, str1);
+
+    // Find end of buff and add a space
+    size_t len = strlen(buff);
+    buff[len] = ' ';
+    buff[len + 1] = '\0';
+
+    // Append str2
+    strcat(buff, str2);
+}
+
+int main(void) {
+    char buff[54];
+
+    pp(buff);           // Get input and process
+    puts(buff);         // Print result
+    return 0;
+}

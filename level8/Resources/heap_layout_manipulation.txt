@@ -1,0 +1,85 @@
+Heap Layout Manipulation Analysis - Level8
+==========================================
+
+Vulnerability Type: Logic Bypass via Heap Arrangement
+Technique: Heap Feng Shui (No Buffer Overflow)
+
+Key Addresses:
+--------------
+auth pointer:     0x804a008
+service pointer:  0x804a018
+auth + 32:        0x804a028 (checked by login)
+
+The Flaw:
+---------
+Program checks: if (*(int *)(auth + 32))
+Problem: auth is only 4 bytes, but check looks 32 bytes beyond it
+
+Exploitation:
+-------------
+1. Allocate auth (4 bytes) at 0x804a008
+2. Allocate service with 40+ chars at 0x804a018
+3. Service data overlaps with auth + 32 (0x804a028)
+4. Login check finds non-zero data → grants shell
+
+Memory Layout:
+--------------
+IMPORTANT: We do NOT overflow service into auth!
+           We make auth + 32 READ FROM service!
+
+0x804a008: [auth (4 bytes)]           ← auth pointer
+           [gap/metadata]
+0x804a018: [service string: AAAA...]  ← service pointer
+           Position 0:  A A A A
+           Position 4:  A A A A
+           Position 8:  A A A A
+           Position 12: A A A A
+0x804a028: Position 16: A A A A       ← auth + 32 points HERE!
+           Position 20: A A A A          (inside service string!)
+           ...
+
+Visual:
+-------
+[auth]........[service: AAAAAAAAAAAAAAAAAAAAAAAAAAAA...]
+↑             ↑                       ↑
+0x804a008     0x804a018               0x804a028
+auth          service                 auth + 32 (reads from service!)
+
+Pointer Math:
+-------------
+auth + 32 = 0x804a008 + 0x20 = 0x804a028
+service + 16 = 0x804a018 + 0x10 = 0x804a028
+Therefore: auth + 32 points into service string
+
+Why It Works:
+-------------
+- malloc() allocates sequentially
+- No ASLR means predictable addresses
+- Service allocation lands after auth
+- 16 bytes into service string = auth + 32
+- Any non-zero value satisfies the check
+
+Commands:
+---------
+auth 
+service AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+login
+
+Result:
+-------
+Shell spawned as level9
+Flag: c542e581c5ba5162a85f767996e3247ed619ef6c6f7b76a59435545dc6259f8a
+
+Key Insight:
+------------
+This is NOT a buffer overflow - we don't corrupt memory.
+We simply arrange heap allocations to satisfy a flawed logic check.
+The program assumes auth + 32 is part of auth structure, but it's not!
+
+Security Lesson:
+----------------
+- Always validate pointer arithmetic bounds
+- Don't assume memory layout
+- Use proper struct definitions instead of arbitrary offsets
+- Logic flaws can be as dangerous as memory corruption
+

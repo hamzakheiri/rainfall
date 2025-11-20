@@ -1,0 +1,119 @@
+Heap GOT Overwrite Analysis - Level7
+=====================================
+
+Target Addresses:
+-----------------
+Function m():        0x080484f4 (prints global buffer with password)
+puts@GOT:           0x08049928 (target for overwrite)
+
+Heap Layout After malloc Calls:
+--------------------------------
+0x804a008: [value=1] [ptr to 0x804a018]  <- First node (8 bytes)
+0x804a018: [8 bytes data buffer]         <- First node's data
+0x804a028: [value=2] [ptr to 0x804a038]  <- Second node (8 bytes)
+0x804a038: [8 bytes data buffer]         <- Second node's data
+
+Vulnerability:
+--------------
+strcpy(node1->data, argv[1]) - No bounds checking on 8-byte buffer
+strcpy(node2->data, argv[2]) - No bounds checking on 8-byte buffer
+
+Exploitation Strategy:
+----------------------
+1. Overflow first buffer (argv[1]) to overwrite second node's data pointer
+2. Replace second node's data pointer with puts@GOT address
+3. Use second strcpy (argv[2]) to write m() address to puts@GOT
+4. When puts("~~") is called, it executes m() instead
+5. m() prints global buffer containing level8 password
+
+Offset Calculation:
+-------------------
+From start of first buffer to second node's data pointer:
+- 8 bytes: First node's data buffer
+- 8 bytes: Heap metadata/padding
+- 4 bytes: Second node's value field
+Total: 20 bytes
+
+Payload Structure:
+------------------
+argv[1]: 'A' * 20 + '\x28\x99\x04\x08'
+argv[2]: '\xf4\x84\x04\x08'
+
+Breakdown of argv[1]:
+- 'A' * 20: Padding to reach second node's data pointer
+- \x28\x99\x04\x08: Address of puts@GOT (little-endian)
+
+Breakdown of argv[2]:
+- \xf4\x84\x04\x08: Address of m() (little-endian)
+
+Execution Flow:
+---------------
+Normal execution:
+1. malloc creates linked list nodes
+2. strcpy copies argv[1] to node1->data
+3. strcpy copies argv[2] to node2->data
+4. fgets reads password into global buffer
+5. puts("~~") prints "~~"
+
+With exploit:
+1. malloc creates linked list nodes
+2. strcpy overflows node1->data, overwrites node2->data pointer with puts@GOT
+3. strcpy writes m() address to puts@GOT (via overwritten pointer)
+4. fgets reads password into global buffer
+5. puts("~~") calls m() instead → prints password
+
+GOT Overwrite Mechanism:
+------------------------
+GOT (Global Offset Table) stores addresses of dynamically linked functions
+- puts@GOT initially points to puts() in libc
+- After overwrite, puts@GOT points to m()
+- Any call to puts() now executes m()
+
+Heap Metadata:
+--------------
+Between malloc chunks, heap manager stores:
+- Size of current chunk
+- Size of previous chunk
+- Status flags (allocated/free)
+- Boundary tags for coalescing
+
+In this exploit:
+- 8 bytes of metadata between first data buffer and second node
+- Metadata is overwritten but not critical for this exploit
+
+Memory Write Primitive:
+------------------------
+strcpy(node2->data, argv[2]) becomes strcpy(puts@GOT, argv[2])
+- Writes arbitrary data to arbitrary location
+- Classic "write-what-where" primitive
+- Achieved by controlling the destination pointer
+
+Little-Endian Format:
+---------------------
+Address 0x08049928 stored as: \x28\x99\x04\x08
+Address 0x080484f4 stored as: \xf4\x84\x04\x08
+- Least significant byte first
+- x86 architecture convention
+
+Protection Analysis:
+--------------------
+No RELRO:  GOT is writable
+No PIE:    Addresses are predictable
+No Canary: No heap protection
+NX disabled: Not relevant for GOT overwrite
+
+Advanced Technique:
+-------------------
+This combines two exploitation primitives:
+1. Heap overflow (control pointer)
+2. GOT overwrite (redirect execution)
+
+Result:
+-------
+Flag: 5684af5cb4c8679958be4abe6373147ab52d95768e047820bf382e44fa8d8fb9
+
+Key Insight:
+------------
+Heap overflows can be used to corrupt pointers, creating arbitrary write
+primitives that enable GOT overwrites without format string vulnerabilities.
+

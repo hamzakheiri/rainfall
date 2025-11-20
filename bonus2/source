@@ -1,0 +1,78 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int greetuser(char *username) {
+    char greeting[64];  // Buffer for greeting message
+    char *lang;
+    
+    // Get LANG environment variable
+    lang = getenv("LANG");
+    
+    if (lang != NULL) {
+        // Check if LANG starts with "fi" (Finnish)
+        if (memcmp(lang, "fi", 2) == 0) {
+            strcpy(greeting, "Hyvää päivää ");
+        }
+        // Check if LANG starts with "nl" (Dutch)
+        else if (memcmp(lang, "nl", 2) == 0) {
+            strcpy(greeting, "Goedemiddag! ");
+        }
+        // Default: English
+        else {
+            strcpy(greeting, "Hello ");
+        }
+    }
+    else {
+        // No LANG set: English
+        strcpy(greeting, "Hello ");
+    }
+    
+    // VULNERABLE: strcat without bounds checking!
+    // If username is long enough, this overflows greeting buffer
+    strcat(greeting, username);
+    
+    puts(greeting);
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    char buffer[76];  // Combined buffer for both arguments
+    char *lang;
+    
+    // Check for exactly 3 arguments (program name + 2 args)
+    if (argc != 3) {
+        return 1;
+    }
+    
+    // Initialize buffer to zero
+    memset(buffer, 0, 76);
+    
+    // Copy first argument (max 40 bytes)
+    strncpy(buffer, argv[1], 40);
+    
+    // Copy second argument (max 32 bytes) to buffer+40
+    strncpy(buffer + 40, argv[2], 32);
+    
+    // Get LANG environment variable
+    lang = getenv("LANG");
+    
+    if (lang != NULL) {
+        // Check if LANG starts with "fi" (Finnish)
+        if (memcmp(lang, "fi", 2) == 0) {
+            // Set locale indicator at buffer+72
+            *(int *)(buffer + 72) = 1;
+        }
+        // Check if LANG starts with "nl" (Dutch)
+        else if (memcmp(lang, "nl", 2) == 0) {
+            // Set locale indicator at buffer+72
+            *(int *)(buffer + 72) = 2;
+        }
+    }
+    
+    // Call greetuser with the first argument from buffer
+    greetuser(buffer);
+    
+    return 0;
+}
+

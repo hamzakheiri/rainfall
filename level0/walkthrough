@@ -1,0 +1,36 @@
+# Level 0 Walkthrough
+
+## Vulnerability Analysis
+The program takes a command line argument and compares it to the magic number 423.
+If the input equals 423, it escalates privileges and spawns a shell.
+
+## Exploitation Steps
+
+### Step 1: Connect to the target
+```bash
+ssh level0@192.168.44.138 -p 4242
+# Password: level0
+```
+
+### Step 2: Analyze the binary
+The program checks if `atoi(argv[1]) == 423`. If true, it:
+1. Gets effective UID and GID
+2. Sets all privileges to effective values
+3. Executes `/bin/sh` with elevated privileges
+
+### Step 3: Execute the exploit
+```bash
+./level0 423
+```
+
+### Step 4: Retrieve the flag
+```bash
+cat /home/user/level1/.pass
+```
+
+## Result
+Flag: `1fe8a524fa4bec01ca4ea2a869af2a02260d4a7d5fe7e7c24d8617e6dca12d3a`
+
+## Vulnerability Type
+- **Privilege Escalation**: Direct privilege escalation through hardcoded value
+- **No Input Validation**: Program trusts user input without proper validation

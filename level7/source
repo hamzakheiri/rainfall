@@ -1,0 +1,39 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+// Global buffer to store password
+char global_buffer[100];
+
+// Function that prints the global buffer (contains password after fgets)
+void m(void)
+{
+    printf("%s - %d\n", global_buffer, time(0));
+}
+
+int main(int argc, char **argv)
+{
+    // Create first linked list node
+    int *node1 = malloc(8);
+    node1[0] = 1;                    // value = 1
+    node1[1] = (int)malloc(8);       // data pointer
+
+    // Create second linked list node
+    int *node2 = malloc(8);
+    node2[0] = 2;                    // value = 2
+    node2[1] = (int)malloc(8);       // data pointer
+
+    // VULNERABLE: Copy user input without bounds checking
+    strcpy((char *)node1[1], argv[1]);  // First overflow - can overwrite node2[1]
+    strcpy((char *)node2[1], argv[2]);  // Second overflow - writes to overwritten pointer
+
+    // Read level8 password into global buffer
+    FILE *fp = fopen("/home/user/level8/.pass", "r");
+    fgets(global_buffer, 68, fp);
+
+    // This call will be hijacked via GOT overwrite
+    puts("~~");
+
+    return 0;
+}

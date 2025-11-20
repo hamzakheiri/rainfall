@@ -1,0 +1,39 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+
+int main(int argc, char *argv[])
+{
+    int input_value;
+    char *shell_path;
+    char *shell_args[2];
+    gid_t effective_gid;
+    uid_t effective_uid;
+    
+    if (argc < 2) {
+        fprintf(stderr, "No !\n");
+        return 0;
+    }
+    
+    input_value = atoi(argv[1]);
+    
+    if (input_value == 423) {
+        shell_path = strdup("/bin/sh");
+        shell_args[0] = shell_path;
+        shell_args[1] = NULL;
+        
+        effective_gid = getegid();
+        effective_uid = geteuid();
+        
+        setresgid(effective_gid, effective_gid, effective_gid);
+        setresuid(effective_uid, effective_uid, effective_uid);
+        
+        execv("/bin/sh", shell_args);
+    } else {
+        fprintf(stderr, "No !\n");
+    }
+    
+    return 0;
+}

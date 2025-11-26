@@ -7,43 +7,30 @@ int main(int argc, char **argv) {
     char buffer[132];  // 0x84 bytes total
     int index;
     
-    // Open /home/user/end/.pass
     file = fopen("/home/user/end/.pass", "r");
     
-    // Initialize buffer to zeros
     memset(buffer, 0, 132);
     
-    // Check if file opened and argc == 2
     if (file == NULL || argc != 2) {
         return -1;
     }
     
-    // Read 66 bytes (0x42) from file into buffer
     fread(buffer, 1, 66, file);
     
-    // Set null terminator at buffer[0x59] (position 89)
     buffer[89] = '\0';
     
-    // Convert argv[1] to integer
     index = atoi(argv[1]);
     
-    // Set null byte at buffer[index]
-    // VULNERABILITY: No bounds checking on index!
     buffer[index] = '\0';
     
-    // Read another 65 bytes (0x41) from file into buffer+66
     fread(buffer + 66, 1, 65, file);
     
-    // Close file
     fclose(file);
     
-    // Compare buffer with argv[1]
     if (strcmp(buffer, argv[1]) == 0) {
-        // If equal, execute shell
         execl("/bin/sh", "sh", NULL);
     }
     else {
-        // Otherwise, print buffer+66
         puts(buffer + 66);
     }
     

